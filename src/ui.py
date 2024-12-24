@@ -1,5 +1,3 @@
-# src/ui.py
-
 import streamlit as st
 from davyd import Davyd
 import pandas as pd
@@ -70,103 +68,54 @@ def main():
     with st.spinner("Fetching Ollama models..."):
         try:
             ollama_models_response = ollama_client.list_models()
-            if isinstance(ollama_models_response, list):
-                if all(isinstance(model, dict) and 'name' in model for model in ollama_models_response):
-                    ollama_models = [model['name'] for model in ollama_models_response]
-                elif all(isinstance(model, str) for model in ollama_models_response):
-                    ollama_models = ollama_models_response
-                else:
-                    ollama_models = [str(model) for model in ollama_models_response]
-            else:
-                ollama_models = []
+            ollama_models = [model['name'] if isinstance(model, dict) else model for model in ollama_models_response]
         except Exception as e:
             logging.error(f"Failed to fetch Ollama models: {e}")
-            ollama_models = []
-
-    if not ollama_models:
-        st.sidebar.error("No models found or failed to fetch models from Ollama API.")
-        ollama_models = ["llama3.2:latest"]  # Fallback default model
+            ollama_models = ["llama3.2:latest"]  # Fallback default model
 
     selected_model = st.sidebar.selectbox("Select Ollama Model", ollama_models)
 
-    # Sidebar: Manage Models
-    with st.sidebar.expander("Manage Models"):
-        new_model = st.text_input("Add New Model", key="add_model")
-        add_model_button = st.button("Add Model")
-        if add_model_button:
-            if new_model and new_model not in ollama_models:
-                try:
-                    st.info(f"Pulling model '{new_model}'...")
-                    ollama_client.pull(new_model)
-                    ollama_models.append(new_model)
-                    st.success(f"Model '{new_model}' added.")
-                except Exception as e:
-                    st.error(f"Failed to add model '{new_model}': {e}")
-            elif new_model in ollama_models:
-                st.warning("Model already exists.")
-            else:
-                st.warning("Please enter a valid model name.")
-
-        remove_model = st.selectbox("Remove Model", options=[""] + ollama_models, key="remove_model_select")
-        if st.button("Remove Selected Model"):
-            if remove_model and remove_model in ollama_models:
-                try:
-                    ollama_client.delete(remove_model)
-                    ollama_models.remove(remove_model)
-                    st.success(f"Model '{remove_model}' removed.")
-                    if selected_model == remove_model:
-                        selected_model = ollama_models[0] if ollama_models else None
-                except Exception as e:
-                    st.error(f"Failed to remove model '{remove_model}': {e}")
-            elif remove_model == "":
-                st.warning("No model selected to remove.")
-            else:
-                st.warning("Model not found.")
-
     # Step 1: Define Dataset Structure
     st.header("1. Define Dataset Structure")
-    # Set number of fields to 7 to align with example data
-    num_fields = st.number_input("Number of Fields", min_value=1, max_value=20, value=7, step=1)
-    fields = []
-    examples = []
 
-    default_field_names = ["text", "intent", "sentiment", "sentiment_polarity", "tone", "category", "keywords"]
-    for i in range(num_fields):
+    # Manage dynamic fields
+    if "fields" not in st.session_state:
+        st.session_state.fields = ["text", "intent", "sentiment", "sentiment_polarity", "tone", "category", "keywords"]
+    if "examples" not in st.session_state:
+        st.session_state.examples = [
+            '"Hi there!"',
+            '"greeting"',
+            '"positive"',
+            '0.9',
+            '"friendly"',
+            '"interaction"',
+            '"hi" "hello" "welcome"'
+        ]
+
+    # Display existing fields and examples with input boxes
+    for i in range(len(st.session_state.fields)):
         col1, col2 = st.columns(2)
         with col1:
-            default_value = default_field_names[i] if i < len(default_field_names) else f"field_{i+1}"
-            field_name = st.text_input(f"Field {i + 1} Name", value=default_value, key=f"field_name_{i + 1}")
-            fields.append(field_name.strip())
+            st.session_state.fields[i] = st.text_input(f"Field {i + 1} Name", value=st.session_state.fields[i], key=f"field_name_{i}")
         with col2:
-            example_text = st.text_input(f"Example for {field_name}", value=f"Example {i + 1}", key=f"example_text_{i + 1}")
-            examples.append(example_text.strip())
+            st.session_state.examples[i] = st.text_input(f"Example for '{st.session_state.fields[i]}'", value=st.session_state.examples[i], key=f"example_text_{i}")
 
-    heading = "|".join([f'"{field}"' for field in fields])
+    # Button to add new field-example pair
+    if st.button("➕ Add New Field"):
+        st.session_state.fields.append(f"field_{len(st.session_state.fields) + 1}")
+        st.session_state.examples.append("")
 
-    # Step 2: Provide Example Rows
-    st.header("2. Provide Example Rows (Optional)")
-    st.write("Enter example rows in the following format:")
-    st.code(heading, language='plaintext')
-    body_examples_input = st.text_area(
-        "Example Rows",
-        value="""\
-"Hi there!"|greeting|positive|0.9|friendly|interaction|"hi" "hello" "welcome"
-"Please draw a mountain landscape."|draw_request|neutral|0.5|instructive|art|"draw" "landscape" "mountain"
-"I am feeling sad today."|emotion|negative|0.4|somber|personal|"sad" "unhappy" "down"
-"Congratulations on your promotion!"|celebration|positive|0.95|joyful|work|"congratulations" "promotion" "achievement"
-""",
-        help="Provide example rows for context only. Each row should match the number of fields and be pipe-separated."
-    ).strip().split("\n")
-    body_examples = [example for example in body_examples_input if example]
+    # Generate heading and example rows
+    heading = "|".join([f'"{field}"' for field in st.session_state.fields])
+    example_rows = "|".join(st.session_state.examples)
 
-    # Step 3: Generation Parameters
-    st.header("3. Generation Parameters")
+    # Live Preview Area
+    st.subheader("Live Preview of Example Rows")
+    st.text_area("Example Rows Preview", value=example_rows, height=200, disabled=True)
+
+    # Step 2: Generation Parameters
+    st.header("2. Generation Parameters")
     num_entries = st.slider("Number of Entries", min_value=50, max_value=1000, value=150, step=50)
-
-    # Advanced Settings
-    with st.expander("Advanced Settings 🔍"):
-        # Removed temperature and max_tokens inputs as they are handled via prompt
-        st.write("Temperature and Max Tokens are embedded within the generation prompt.")
 
     # Initialize Davyd
     generator = Davyd(num_entries=num_entries, ollama_host=ollama_host, ollama_model=selected_model)
@@ -175,7 +124,7 @@ def main():
     if st.button("✨ Generate Dataset"):
         with st.spinner("Generating dataset..."):
             try:
-                generator.generate_dataset(heading, body_examples)
+                generator.generate_dataset(heading, [example_rows])
                 st.success("🔥 Dataset generation complete!")
                 st.session_state["dataset"] = generator.dataset
             except ValueError as ve:
@@ -189,7 +138,7 @@ def main():
     if "dataset" in st.session_state:
         dataset = st.session_state["dataset"]
         df = pd.DataFrame(dataset)
-        st.header("4. Preview & Modify Dataset")
+        st.header("3. Preview & Modify Dataset")
         edited_df = st.data_editor(
             df,
             num_rows="dynamic",
