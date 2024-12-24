@@ -107,11 +107,12 @@ def main():
 
     # Generate heading and example rows
     heading = "|".join([f'"{field}"' for field in st.session_state.fields])
-    example_rows = "|".join(st.session_state.examples)
+    example_rows = [heading] + ["|".join(st.session_state.examples)]
 
     # Live Preview Area
     st.subheader("Live Preview of Example Rows")
-    st.text_area("Example Rows Preview", value=example_rows, height=200, disabled=True)
+    preview_text = "\n".join(example_rows)
+    st.text_area("Example Rows Preview", value=preview_text, height=200, disabled=True)
 
     # Step 2: Generation Parameters
     st.header("2. Generation Parameters")
@@ -124,7 +125,7 @@ def main():
     if st.button("✨ Generate Dataset"):
         with st.spinner("Generating dataset..."):
             try:
-                generator.generate_dataset(heading, [example_rows])
+                generator.generate_dataset(heading, example_rows)
                 st.success("🔥 Dataset generation complete!")
                 st.session_state["dataset"] = generator.dataset
             except ValueError as ve:
@@ -139,6 +140,8 @@ def main():
         dataset = st.session_state["dataset"]
         df = pd.DataFrame(dataset)
         st.header("3. Preview & Modify Dataset")
+        st.write("**Fields:**")
+        st.write(", ".join(st.session_state.fields))  # Show title fields at the top
         edited_df = st.data_editor(
             df,
             num_rows="dynamic",
