@@ -1,8 +1,10 @@
 # src/davyd.py
 
 import logging
+import random
 import json
 import pandas as pd
+from typing import List, Dict
 from ollama_client import OllamaClient
 from utils import (
     validate_heading_format,
@@ -78,62 +80,31 @@ class Davyd:
 
         return prompt
 
-    def generate_dataset(self, heading: str, body_examples: list = None):
+    def generate_dataset(self, heading: str, example_rows: List[str]):
         """
-        Generate a dataset using the model for real, non-repetitive data.
+        Generate a dataset based on the provided structure and examples.
 
-        :param heading: The data structure heading, in quoted, pipe-separated format.
-        :param body_examples: Optional examples to guide the data generation.
+        :param heading: A pipe-separated string of field names.
+        :param example_rows: A list of example data rows.
         """
-        if not validate_heading_format(heading):
-            raise ValueError("Invalid heading format. Ensure each field is enclosed in quotes and separated by '|'.")
+        fields = [field.strip().strip('"') for field in heading.split('|')]
+        self.fields = fields  # Store fields for validation
+        logging.info(f"Generating dataset with fields: {fields}")
 
-        # Parse and set field names dynamically
-        self.fields = [field.strip().strip('"') for field in heading.split("|")]
-        logging.info(f"Defined fields: {self.fields}")
-        self.dataset = []
+        prompt = self.create_advanced_prompt(fields, example_rows)
+        response = self.ollama_client.generate_text(prompt)
 
-        # Create advanced prompt
-        prompt = self.create_advanced_prompt(self.fields, body_examples)
+        if not response:
+            logging.error("No response from Ollama. Dataset generation aborted.")
+            return
 
-        # Process provided example rows for context
-        if body_examples:
-            logging.info("Processing example rows for context...")
-            for example in body_examples:
-                try:
-                    entry = self.parse_example(example, self.fields)
-                    if self.is_valid_entry(entry):
-                        self.dataset.append(entry)
-                        logging.info(f"Added example entry: {entry}")
-                    else:
-                        logging.warning(f"Skipped invalid example entry: {entry}")
-                except Exception as e:
-                    logging.warning(f"Failed to parse example: {example} - {e}")
+        rows = response.strip().split("\n")
+        for row in rows:
+            entry = self.parse_example(row, fields)
+            if entry and self.is_valid_entry(entry):
+                self.dataset.append(entry)
 
-        # Determine how many entries need to be generated
-        entries_to_generate = self.num_entries - len(self.dataset)
-        logging.info(f"Generating {entries_to_generate} new entries using the model...")
-
-        for i in range(entries_to_generate):
-            try:
-                # Use the advanced prompt with embedded temperature instructions
-                generated_text = self.ollama_client.generate_text(prompt=prompt)
-                
-                # Each generated row is a pipe-separated string
-                generated_rows = generated_text.strip().split("\n")
-                for row in generated_rows:
-                    if not row.strip():
-                        continue  # Skip empty lines
-                    entry = self.parse_example(row, self.fields)
-                    if self.is_valid_entry(entry):
-                        self.dataset.append(entry)
-                        logging.info(f"Added generated entry {len(self.dataset)}: {entry}")
-                        if len(self.dataset) >= self.num_entries:
-                            break
-                    else:
-                        logging.warning(f"Skipped invalid generated entry: {entry}")
-            except Exception as e:
-                logging.error(f"Error generating entry {i+1}: {e}")
+        logging.info(f"Dataset generation completed. Total entries: {len(self.dataset)}")
 
     def parse_example(self, example: str, fields: list) -> dict:
         """
@@ -145,7 +116,7 @@ class Davyd:
         """
         values = [value.strip().strip('"') for value in example.split("|")]
         if len(values) != len(fields):
-            logging.warning(f"Example row does not match fields: {example}")
+            logging.warning(f"Row does not match fields: {example}")
             return {}
         return {field: value for field, value in zip(fields, values)}
 
@@ -206,4 +177,7 @@ class Davyd:
             save_json_file(self.dataset, filename)
             logging.info(f"Dataset saved as {filename} in JSON format.")
         else:
+            logging.error("Unsupported output format. Use 'csv' or 'json'.")
             raise ValueError("Unsupported output format. Use 'csv' or 'json'.")
+
+# Note: Ensure that the above class definition is the only one in davyd.py

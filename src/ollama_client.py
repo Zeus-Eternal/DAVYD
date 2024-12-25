@@ -2,6 +2,27 @@
 
 import logging
 from ollama import Client  # Ensure this import aligns with the actual library
+import os
+import json
+import logging
+
+TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), '..', 'templates')
+
+def validate_json_files():
+    for file in os.listdir(TEMPLATE_DIR):
+        if file.endswith('.json'):
+            filepath = os.path.join(TEMPLATE_DIR, file)
+            try:
+                with open(filepath, 'r') as f:
+                    json.load(f)
+                logging.info(f"Template '{file}' is valid.")
+            except json.JSONDecodeError as e:
+                logging.error(f"Invalid JSON in '{file}': {e}")
+            except Exception as e:
+                logging.error(f"Error reading '{file}': {e}")
+
+if __name__ == "__main__":
+    validate_json_files()
 
 class OllamaClient:
     def __init__(self, model: str = "llama3.2:latest", host: str = "http://localhost:11434", timeout: int = 60):
