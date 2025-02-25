@@ -1,363 +1,467 @@
 # src/ui.py
-
-import sys
-from pathlib import Path
-import streamlit as st
-from davyd import Davyd  # Ensure this import is correct
-import pandas as pd
+import os
+import json
 import logging
-from ollama_client import OllamaClient
-from autogen.scheduler import Scheduler
-from autogen.field_suggester import FieldSuggester
-from autogen.template_manager import TemplateManager
-from autogen.data_validator import DataValidator
-from autogen.intelligent_suggester import IntelligentSuggester
-from autogen.visualization import Visualization
+import streamlit as st
+import pandas as pd
+from pathlib import Path
+from typing import List, Dict
+from davyd import Davyd
+from utils.manage_dataset import DatasetManager
+from model_providers import (
+    OllamaClient, DeepSeekClient, GeminiClient, ChatGPTClient,
+    AnthropicClient, ClaudeClient, MistralClient, GroqClient, HuggingFaceClient
+)
+from autogen_client.visualization import Visualization
 
-# Add 'src' directory to Python path
-sys.path.append(str(Path(__file__).parent.resolve()))
+# Constants
+TEMP_DIR = "data_bin/temp"
+ARCHIVE_DIR = "data_bin/archive"
+MERGED_DIR = "data_bin/merged_datasets"
+SETTINGS_FILE = "settings.json"
 
-# Configure logging for Streamlit
+# Configure logging
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def display_data_quality_metrics(dataset: list, visualization: Visualization):
-    """
-    Display data quality metrics for the dataset.
-    """
-    if not dataset:
-        st.warning("No data available to display metrics.")
-        return
+class DatasetUI:
+    """Central class handling all UI components and business logic"""
 
-    df = pd.DataFrame(dataset)
-    
-    st.header("📊 Data Quality Insights")
-    
-    # Generate Dashboard Visualizations
-    visualization.generate_dashboard(df)
+    def __init__(self):
+        self.dataset_manager = DatasetManager(TEMP_DIR, ARCHIVE_DIR, MERGED_DIR)
+        self.visualization = Visualization()
+        self.initialize_session_state()
 
-def main():
-    st.set_page_config(page_title="🔥 Real Dataset Generator", layout="wide")
-    st.title("🔥 Real Dataset Generator")
+    def initialize_session_state(self):
+        """Initialize Streamlit session state variables"""
+        defaults = {
+            'fields': ["text", "intent", "sentiment", "sentiment_polarity", "tone", "category", "keywords"],
+            'examples': [
+                '"Hi there!"', '"greeting"', '"positive"', '0.9',
+                '"friendly"', '"interaction"', '"hi" "hello" "welcome"'
+            ],
+            'data_separator': '"',
+            'section_separator': "|",
+            'dataset': [],
+            'temp_filename': None,
+            'selected_model': None,
+            'is_generated': False,  # Track if dataset is generated
+            'merged_datasets': [],  # Track datasets
+            'selected_dataset': None  # Track the selected dataset
+        }
 
-    st.sidebar.header("Configuration")
+        for key, value in defaults.items():
+            if key not in st.session_state:
+                st.session_state[key] = value
 
-    # Sidebar: Ollama API Configuration
-    st.sidebar.subheader("Ollama API Configuration")
-    ollama_host = st.sidebar.text_input(
-        "Ollama API URL",
-        value="http://127.0.0.1:11434",
-        help="Enter the Ollama API URL."
-    )
-
-    # Initialize OllamaClient
-    ollama_client = OllamaClient(host=ollama_host)
-
-    # Initialize Scheduler
-    if 'scheduler' not in st.session_state:
-        st.session_state.scheduler = Scheduler()
-    scheduler = st.session_state.scheduler
-
-    # Initialize Autogen Components
-    field_suggester = FieldSuggester(ollama_client)
-    template_manager = TemplateManager()
-    data_validator = DataValidator()
-    intelligent_suggester = IntelligentSuggester(ollama_client)
-    visualization = Visualization()
-
-    # Fetch available models
-    with st.spinner("Fetching Ollama models..."):
+    def load_settings(self, provider: str) -> dict:
+        """Load settings for a specific provider"""
         try:
-            ollama_models_response = ollama_client.list_models()
-            ollama_models = [model['name'] if isinstance(model, dict) else model for model in ollama_models_response]
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f).get(provider, {})
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
         except Exception as e:
-            logging.error(f"Failed to fetch Ollama models: {e}")
-            ollama_models = ["llama3.2:latest"]  # Fallback default model
+            logger.error(f"Settings load error: {e}")
+            return {}
 
-    if not ollama_models:
-        st.sidebar.error("No models found or failed to fetch models from Ollama API.")
-        ollama_models = ["llama3.2:latest"]  # Fallback default model
+    def save_settings(self, provider: str, settings: dict):
+        """Save provider-specific settings"""
+        try:
+            all_settings = self.load_settings("__all__") or {}
+            all_settings[provider] = settings
+            with open(SETTINGS_FILE, "w") as f:
+                json.dump(all_settings, f, indent=4)
+            st.success(f"{provider} settings saved!")
+        except Exception as e:
+            logger.error(f"Settings save error: {e}")
+            st.error("Failed to save settings")
 
-    selected_model = st.sidebar.selectbox("Select Ollama Model", ollama_models)
+    def model_config_sidebar(self):
+        """Render model configuration sidebar"""
+        st.sidebar.header("🛠️ Model Configuration")
+        provider = st.sidebar.selectbox(
+            "AI Provider",
+            ["Ollama", "DeepSeek", "Gemini", "ChatGPT", "Anthropic",
+             "Claude", "Mistral", "Groq", "HuggingFace"],
+            index=0
+        )
 
-    # Sidebar: Manage Models
-    with st.sidebar.expander("Manage Models"):
-        new_model = st.text_input("Add New Model", key="add_model")
-        add_model_button = st.button("Add Model")
-        if add_model_button:
-            if new_model and new_model not in ollama_models:
-                try:
-                    st.info(f"Pulling model '{new_model}'...")
-                    ollama_client.pull(new_model)
-                    ollama_models.append(new_model)
-                    st.success(f"Model '{new_model}' added.")
-                except Exception as e:
-                    st.error(f"Failed to add model '{new_model}': {e}")
-            elif new_model in ollama_models:
-                st.warning("Model already exists.")
-            else:
-                st.warning("Please enter a valid model name.")
+        saved_settings = self.load_settings(provider)
+        settings = {}
 
-        if len(ollama_models) > 0:
-            remove_model = st.selectbox("Remove Model", options=[""] + ollama_models, key="remove_model_select")
-            remove_model_button = st.button("Remove Selected Model")
-            if remove_model_button:
-                if remove_model and remove_model in ollama_models:
-                    try:
-                        ollama_client.delete(remove_model)
-                        ollama_models.remove(remove_model)
-                        st.success(f"Model '{remove_model}' removed.")
-                        if selected_model == remove_model:
-                            selected_model = ollama_models[0] if ollama_models else None
-                    except Exception as e:
-                        st.error(f"Failed to remove model '{remove_model}': {e}")
-                elif remove_model == "":
-                    st.warning("No model selected to remove.")
-                else:
-                    st.warning("Model not found.")
+        if provider != "Ollama":
+            settings["api_key"] = st.sidebar.text_input(
+                f"{provider} API Key",
+                value=saved_settings.get("api_key", ""),
+                type="password"
+            )
 
-    # Step 1: Define Dataset Structure
-    st.header("1. Define Dataset Structure")
-    
-    # Initialize session state for dynamic fields
-    if 'fields' not in st.session_state:
-        st.session_state.fields = ["text", "intent", "sentiment", "sentiment_polarity", "tone", "category", "keywords"]
-    if 'examples' not in st.session_state:
-        st.session_state.examples = [
-            '"Hi there!"',
-            '"greeting"',
-            '"positive"',
-            '0.9',
-            '"friendly"',
-            '"interaction"',
-            '"hi" "hello" "welcome"'
-        ]
+        if provider == "Ollama":
+            settings["host"] = st.sidebar.text_input(
+                "API URL",
+                value=saved_settings.get("host", "http://127.0.0.1:11434")
+            )
 
-    # Template Selection Section
-    st.subheader("Template-Based Setup")
-    templates = template_manager.load_templates()
-    selected_template = st.selectbox("Select a Template", ["None"] + list(templates.keys()))
-    if selected_template != "None":
-        template_structure = templates[selected_template]
-        st.session_state.fields = [field['name'] for field in template_structure['fields']]
-        st.session_state.examples = [""] * len(template_structure['fields'])  # Optionally, load examples if available
-        st.success(f"Template '{selected_template}' loaded successfully.")
+        if provider == "HuggingFace":
+            settings["endpoint"] = st.sidebar.text_input(
+                "Endpoint URL",
+                value=saved_settings.get("endpoint", "https://api-inference.huggingface.co/models")
+            )
 
-    # Display existing fields and examples with input boxes
-    for i in range(len(st.session_state.fields)):
-        col1, col2 = st.columns(2)
+        col1, col2 = st.sidebar.columns(2)
         with col1:
-            st.session_state.fields[i] = st.text_input(
-                f"Field {i + 1} Name", 
-                value=st.session_state.fields[i], 
-                key=f"field_name_{i}"
-            )
+            if st.button("💾 Save Settings"):
+                self.save_settings(provider, settings)
         with col2:
-            st.session_state.examples[i] = st.text_input(
-                f"Example for '{st.session_state.fields[i]}'", 
-                value=st.session_state.examples[i], 
-                key=f"example_text_{i}"
+            if st.button("🔄 Reset"):
+                if Path(SETTINGS_FILE).exists():
+                    Path(SETTINGS_FILE).unlink()
+                    st.success("Settings reset!")
+
+        # Initialize model client
+        model_client = self.create_model_client(provider, settings)
+        if not model_client:
+            return None, None
+
+        # Model selection for providers that support multiple models
+        if provider != "HuggingFace":
+            try:
+                with st.spinner(f"Loading {provider} models..."):
+                    models = model_client.list_models()
+                    st.session_state.selected_model = st.sidebar.selectbox(
+                        "Select Model",
+                        models,
+                        key=f"{provider}_model_select"
+                    )
+            except Exception as e:
+                logger.error(f"Model load error: {e}")
+                st.error(f"Failed to load models: {e}")
+                return None, None
+
+        return model_client, st.session_state.selected_model
+
+    def create_model_client(self, provider: str, settings: dict):
+        """Instantiate the appropriate model client"""
+        try:
+            clients = {
+                "Ollama": OllamaClient(host=settings.get("host")),
+                "DeepSeek": DeepSeekClient(api_key=settings.get("api_key")),
+                "Gemini": GeminiClient(api_key=settings.get("api_key")),
+                "ChatGPT": ChatGPTClient(api_key=settings.get("api_key")),
+                "Anthropic": AnthropicClient(api_key=settings.get("api_key")),
+                "Claude": ClaudeClient(api_key=settings.get("api_key")),
+                "Mistral": MistralClient(api_key=settings.get("api_key")),
+                "Groq": GroqClient(api_key=settings.get("api_key")),
+                "HuggingFace": HuggingFaceClient(
+                    api_key=settings.get("api_key"),
+                    endpoint=settings.get("endpoint")
+                )
+            }
+            return clients[provider]
+        except Exception as e:
+            logger.error(f"Client init error: {e}")
+            st.error(f"{provider} initialization failed")
+            return None
+
+    def dataset_structure_interface(self):
+        """Render dataset structure configuration UI"""
+        st.header("📐 Dataset Structure")
+
+        # Dynamic field management
+        cols = st.columns([4, 1])
+        with cols[0]:
+            st.subheader("Fields & Examples")
+        with cols[1]:
+            if st.button("➕ Add Field"):
+                st.session_state.fields.append(f"field_{len(st.session_state.fields) + 1}")
+                st.session_state.examples.append("")
+
+        for i in range(len(st.session_state.fields)):
+            cols = st.columns([1, 3, 1])
+            with cols[0]:
+                st.session_state.fields[i] = st.text_input(
+                    f"Field {i + 1}",
+                    value=st.session_state.fields[i],
+                    key=f"field_{i}"
+                )
+            with cols[1]:
+                st.session_state.examples[i] = st.text_input(
+                    f"Example {i + 1}",
+                    value=st.session_state.examples[i],
+                    key=f"example_{i}"
+                )
+            with cols[2]:
+                if i > 0 and st.button("🗑️", key=f"del_{i}"):
+                    del st.session_state.fields[i]
+                    del st.session_state.examples[i]
+                    st.experimental_rerun()
+
+        # Separator selection
+        st.subheader("Formatting")
+        cols = st.columns(2)
+        with cols[0]:
+            st.session_state.data_separator = st.selectbox(
+                "Data Wrapper", ['"', "'"], index=0
+            )
+        with cols[1]:
+            st.session_state.section_separator = st.selectbox(
+                "Field Separator", ["|", ":", "-", "~"], index=0
             )
 
-    # Button to add new field-example pair
-    if st.button("➕ Add New Field"):
-        st.session_state.fields.append(f"field_{len(st.session_state.fields) + 1}")
-        st.session_state.examples.append("")
+    def generation_interface(self, model_client, model_name: str):
+        """Handle dataset generation workflow"""
+        st.header("⚡ Generation Parameters")
 
-    # Button to remove a field
-    if len(st.session_state.fields) > 1:
-        remove_field = st.selectbox("Select Field to Remove", options=st.session_state.fields, key="remove_field_select")
-        if st.button("➖ Remove Selected Field"):
-            if remove_field in st.session_state.fields:
-                index = st.session_state.fields.index(remove_field)
-                st.session_state.fields.pop(index)
-                st.session_state.examples.pop(index)
-                st.success(f"Field '{remove_field}' removed successfully.")
-            else:
-                st.warning("Selected field not found.")
-    else:
-        st.warning("At least one field is required.")
+        cols = st.columns([2, 1])
+        with cols[0]:
+            num_entries = st.slider(
+                "Number of Entries", 50, 5000, 500, 50,
+                help="Select the desired number of dataset entries"
+            )
+        with cols[1]:
+            st.write("\n")
+            if st.button("✨ Generate Dataset", use_container_width=True):
+                self.generate_dataset(model_client, model_name, num_entries)
 
-    # Auto-Suggest Fields Section
-    st.subheader("Auto-Suggest Fields")
-    user_description = st.text_area("Describe your dataset structure:", height=100, help="Provide a brief description to auto-suggest fields and types.")
-    if st.button("🔍 Suggest Fields"):
-        if user_description.strip():
-            suggestions = field_suggester.suggest_fields(user_description)
-            if suggestions:
-                for suggestion in suggestions:
-                    st.session_state.fields.append(suggestion['name'])
-                    st.session_state.examples.append("")  # Optionally, prompt for example
-                st.success("Fields suggested and added successfully.")
-            else:
-                st.warning("No suggestions available. Please refine your description.")
-        else:
-            st.warning("Please enter a description to get field suggestions.")
+        # Only show generated dataset if it exists
+        if st.session_state.is_generated:
+            self.post_generation_interface()
 
-    # Intelligent Data Suggestions Section
-    st.subheader("Intelligent Data Suggestions")
-
-    # Dropdown to select the field for suggestions
-    field_to_suggest = st.selectbox("Select Field to Suggest Values For", st.session_state.fields)
-
-    # Button to trigger value suggestions
-    if field_to_suggest:
-        if st.button("💡 Suggest Values"):
-            try:
-                # Ensure valid examples are provided for context
-                if not st.session_state.examples:
-                    st.warning("No examples available to generate suggestions.")
-                else:
-                    # Generate suggestions using IntelligentSuggester
-                    suggestions = intelligent_suggester.suggest_field_values(
-                        st.session_state.examples, field_to_suggest
-                    )
-                    if suggestions:
-                        # Handle updates based on field type
-                        field_index = st.session_state.fields.index(field_to_suggest)
-                        if field_to_suggest.lower() == "keywords":
-                            # Format keywords as space-separated strings
-                            st.session_state.examples[field_index] = '"' + '" "'.join(suggestions) + '"'
-                        else:
-                            # General case: comma-separated values
-                            st.session_state.examples[field_index] = ', '.join(suggestions)
-                        st.success(f"Suggested values for '{field_to_suggest}' have been updated.")
-                    else:
-                        st.warning("No suggestions available for the selected field.")
-            except AttributeError as e:
-                st.error(f"AttributeError: {e}")
-                logging.error(f"Error in IntelligentSuggester.suggest_field_values: {e}")
-            except Exception as ex:
-                st.error(f"An unexpected error occurred: {ex}")
-                logging.error(f"Unexpected error in suggesting values: {ex}")
-
-    # Generate heading and example rows
-    heading = "|".join([f'"{field}"' for field in st.session_state.fields])
-    example_rows = [heading] + ["|".join(st.session_state.examples)]
-
-    # Live Preview Area
-    st.subheader("Live Preview of Example Rows")
-    preview_text = "\n".join(example_rows)
-    st.text_area("Example Rows Preview", value=preview_text, height=200, disabled=True)
-
-    # Step 2: Generation Parameters
-    st.header("2. Generation Parameters")
-    num_entries = st.slider("Number of Entries", min_value=50, max_value=1000, value=150, step=50)
-
-    # Step 3: Advanced Settings (Optional)
-    with st.expander("Advanced Settings 🔍"):
-        st.write("Automated settings are managed through Autogen features.")
-
-    # Initialize Davyd
-    generator = Davyd(
-        num_entries=num_entries, 
-        ollama_host=ollama_host, 
-        ollama_model=selected_model
-    )
-
-    # Define the scheduled task
-    def scheduled_dataset_generation():
-        """
-        Function to generate the dataset automatically.
-        """
+    def generate_dataset(self, model_client, model_name: str, num_entries: int):
+        """Execute dataset generation process"""
         try:
-            generator.generate_dataset(heading, st.session_state.examples)
-            st.session_state["dataset"] = generator.dataset
-            logging.info("Scheduled dataset generation completed successfully.")
+            heading = st.session_state.section_separator.join(
+                f'{st.session_state.data_separator}{f}{st.session_state.data_separator}'
+                for f in st.session_state.fields
+            )
+
+            davyd = Davyd(
+                num_entries=num_entries,
+                model_client=model_client,
+                model_name=model_name,
+                dataset_manager=self.dataset_manager,
+                section_separator=st.session_state.section_separator,
+                data_separator=st.session_state.data_separator
+            )
+
+            with st.spinner("🚀 Generating dataset..."):
+                davyd.generate_dataset(heading, st.session_state.examples)
+                st.session_state.dataset = davyd.dataset
+
+                # Save to temporary file
+                st.session_state.temp_filename = self.dataset_manager.get_temp_filename("dataset")
+                self.dataset_manager.save_csv_file(
+                    pd.DataFrame(st.session_state.dataset),
+                    st.session_state.temp_filename
+                )
+                st.session_state.is_generated = True  # Mark dataset as generated
+                st.success("✅ Generation complete!")
+
         except Exception as e:
-            logging.error(f"Scheduled dataset generation failed: {e}")
+            logger.error(f"Generation error: {e}")
+            st.error(f"Generation failed: {str(e)}")
+            st.session_state.dataset = []
+            st.session_state.is_generated = False
 
-    # Generate Dataset Button
-    if st.button("✨ Generate Dataset"):
-        with st.spinner("Generating dataset..."):
-            try:
-                generator.generate_dataset(heading, st.session_state.examples)
-                st.success("🔥 Dataset generation complete!")
-                st.session_state["dataset"] = generator.dataset
-            except ValueError as ve:
-                st.error(f"❌ Value Error: {ve}")
-                logging.error(f"Value Error during generation: {ve}")
-            except Exception as e:
-                st.error(f"❌ Error during generation: {e}")
-                logging.error(f"Error during generation: {e}")
+    def post_generation_interface(self):
+        """Display generated dataset and management tools"""
+        st.header("📊 Generated Dataset")
 
-    # Display and Modify Dataset
-    if "dataset" in st.session_state:
-        dataset = st.session_state["dataset"]
-        df = pd.DataFrame(dataset)
-        st.header("3. Preview & Modify Dataset")
-        st.write("**Fields:**")
-        st.write(", ".join(st.session_state.fields))  # Show title fields at the top
+        # Data Editor
+        df = pd.DataFrame(st.session_state.dataset)
         edited_df = st.data_editor(
             df,
             num_rows="dynamic",
             use_container_width=True,
-            key="data_editor"
+            height=600,
+            key="dataset_editor"
         )
 
-        if st.button("💾 Save & Export"):
-            output_format = st.selectbox("Output Format", ["csv", "json"], index=0)
-            filename = f"generated_dataset.{output_format}"
-            try:
-                # Define fields_info based on current fields and types
-                fields_info = [{'name': field, 'type': 'string'} for field in st.session_state.fields]  # Modify types as needed
-                errors = data_validator.validate_dataset(edited_df.to_dict(orient='records'), fields_info)
-                if errors:
-                    st.error("Dataset validation failed:")
-                    for error in errors:
-                        st.error(error)
-                else:
-                    generator.dataset = edited_df.to_dict(orient='records')
-                    generator.save_dataset(filename, output_format=output_format)
-                    st.success(f"✅ Dataset saved as {filename}!")
-                    with open(filename, 'rb') as file:
-                        st.download_button(
-                            label="📥 Download Dataset",
-                            data=file,
-                            file_name=filename,
-                            mime='application/octet-stream'
-                        )
-            except Exception as e:
-                st.error(f"❌ Error saving dataset: {e}")
+        # Action buttons
+        cols = st.columns([1, 1, 2])
+        with cols[0]:
+            if st.button("🔄 Update Dataset"):
+                st.session_state.dataset = edited_df.to_dict("records")
+        with cols[1]:
+            if st.button("📦 Archive Dataset"):
+                self.archive_current_dataset()
 
-        # Display Data Quality Metrics
-        display_data_quality_metrics(generator.dataset, visualization)
-
-        # Export Template Section
-        st.subheader("Export Template")
-        export_template_name = st.selectbox("Select Template to Export", ["None"] + list(template_manager.load_templates().keys()))
-        export_path = st.text_input("Export Path (e.g., /path/to/export/template.json)")
-        if st.button("📤 Export Template"):
-            if export_template_name != "None" and export_path:
-                template_manager.export_template(export_template_name, export_path)
-                st.success(f"Template '{export_template_name}' exported successfully to {export_path}.")
+        # Data Quality Dashboard
+        st.header("📈 Data Quality Insights")
+        with st.expander("Quality Metrics"):
+            if st.session_state.dataset:
+                self.visualization.generate_dashboard(pd.DataFrame(st.session_state.dataset))
             else:
-                st.warning("Please select a template and provide a valid export path.")
+                st.warning("No dataset available for analysis")
 
-        # Schedule Dataset Generation
-        st.header("4. Schedule Dataset Generation")
-        with st.form("scheduler_form"):
-            schedule_interval = st.selectbox("Select Schedule Interval", ["None", "Hourly", "Daily"])
-            time_of_day = st.text_input(
-                "Select Time of Day for Daily Schedule (HH:MM)", 
-                value="10:00", 
-                help="Format: HH:MM (24-hour)"
-            )
-            submit_scheduler = st.form_submit_button("🕒 Schedule Generation")
-            if submit_scheduler:
-                if schedule_interval != "None":
-                    try:
-                        # Schedule the task
-                        scheduler.schedule_task(
-                            scheduled_dataset_generation, 
-                            interval=schedule_interval.lower(), 
-                            time_of_day=time_of_day
-                        )
-                        scheduler.start()
-                        st.success(f"✅ Dataset generation scheduled {schedule_interval.lower()}ly at {time_of_day}.")
-                    except ValueError as ve:
-                        st.error(f"❌ Scheduling Error: {ve}")
+        # Dataset Management
+        st.header("🗂️ Generated Datasets")
+        self.generated_datasets_interface()
+
+    def archive_current_dataset(self):
+        """Archive the current dataset"""
+        if st.session_state.temp_filename:
+            try:
+                self.dataset_manager.archive_dataset(st.session_state.temp_filename)
+                st.success("Dataset archived successfully!")
+            except Exception as e:
+                st.error(f"Archiving failed: {str(e)}")
+        else:
+            st.warning("No dataset to archive")
+
+    def generated_datasets_interface(self):
+        """Display all generated datasets (active, archived, merged)"""
+        try:
+            # List active, archived, and merged datasets
+            active_datasets = self.dataset_manager.list_datasets()
+            archived_datasets = self.dataset_manager.list_archived_datasets()
+            merged_datasets = self.dataset_manager.list_merged_datasets()
+
+            if not active_datasets and not archived_datasets and not merged_datasets:
+                st.warning("No generated datasets available.")
+                return
+
+            # Combine all datasets for selection
+            all_datasets = [
+                (dataset, "📦 Active") for dataset in active_datasets
+            ] + [
+                (dataset, "📁 Archive") for dataset in archived_datasets
+            ] + [
+                (dataset, "🔄 Merge") for dataset in merged_datasets
+            ]
+
+            selected = st.selectbox("Select Dataset", all_datasets, format_func=lambda x: f"{x[0]} ({x[1]})", key="generated_datasets_select")
+
+            # Determine if the selected dataset is archived, merged, or active
+            dataset_name, dataset_type = selected
+            st.session_state.selected_dataset = (dataset_name, dataset_type)
+
+            # Show the selected dataset
+            if dataset_name:
+                self.show_selected_dataset(dataset_name, dataset_type)
+
+            cols = st.columns(4)
+            with cols[0]:  # Delete button
+                if st.button("🗑️ Delete Dataset", key="delete_dataset_button"):
+                    if dataset_type == "📁 Archive":
+                        dataset_path = os.path.join(self.dataset_manager.archive_dir, dataset_name)
+                    elif dataset_type == "🔄 Merge":
+                        dataset_path = os.path.join(self.dataset_manager.merged_dir, dataset_name)
+                    else:
+                        dataset_path = os.path.join(self.dataset_manager.temp_dir, dataset_name)
+
+                    if self.dataset_manager.delete_dataset(dataset_path):
+                        st.success(f"Dataset '{dataset_name}' deleted successfully!")
+                        st.experimental_rerun()
+                    else:
+                        st.error(f"Failed to delete dataset '{dataset_name}'")
+
+            with cols[1]:  # Download button
+                if st.button("📥 Download", key="download_dataset_button"):
+                    self.download_dataset(dataset_name)
+
+            with cols[2]:  # Restore button (only for archived datasets)
+                if dataset_type == "📁 Archive":
+                    if st.button("📤 Restore", key="restore_dataset_button"):
+                        if self.dataset_manager.restore_archived_dataset(dataset_name):
+                            st.success(f"Dataset '{dataset_name}' restored successfully!")
+                            st.experimental_rerun()
+                        else:
+                            st.error(f"Failed to restore dataset '{dataset_name}'")
                 else:
-                    st.info("No scheduling selected.")
+                    st.write("")  # Placeholder for non-archived datasets
+
+            # Dataset merging
+            st.subheader("Merge Datasets")
+            merge_targets = st.multiselect("Select datasets to merge", [ds[0] for ds in all_datasets], key="merge_datasets_select")
+            merged_name = st.text_input("Merged dataset name", "merged_dataset.csv", key="merged_name_input")
+            if st.button("🔀 Merge Selected", key="merge_datasets_button"):
+                merged_path = os.path.join(self.dataset_manager.merged_dir, merged_name)
+                self.dataset_manager.merge_datasets(merge_targets, merged_name)
+                st.success("Datasets merged successfully!")
+                st.session_state.merged_datasets.append(merged_name)
+
+                # Option to archive the merged dataset
+                if st.button("📦 Archive Merged Dataset", key="archive_merged_dataset_button"):
+                    self.dataset_manager.archive_dataset(merged_path)
+                    st.success("Merged dataset archived successfully!")
+
+        except Exception as e:
+            st.error(f"Dataset management error: {str(e)}")
+
+    def show_selected_dataset(self, dataset_name: str, dataset_type: str):
+        """Show the selected dataset"""
+        try:
+            # Load the selected dataset
+            if dataset_type == "📁 Archive":
+                df = self.dataset_manager.load_archived_dataset(dataset_name)
+            elif dataset_type == "🔄 Merge":
+                df = self.dataset_manager.load_merged_dataset(dataset_name)
+            else:
+                df = self.dataset_manager.load_dataset(dataset_name)
+
+            st.header(f"Dataset: {dataset_name} ({dataset_type})")
+            st.dataframe(df, use_container_width=True, height=600)
+
+            # Data Quality Dashboard
+            st.header("📈 Data Quality Insights")
+            with st.expander("Quality Metrics"):
+                if not df.empty:
+                    self.visualization.generate_dashboard(df)
+                else:
+                    st.warning("No dataset available for analysis")
+
+        except Exception as e:
+            st.error(f"Failed to load dataset: {str(e)}")
+
+    def download_dataset(self, dataset_name: str):
+        """Handle dataset download for active, archived, and merged datasets"""
+        try:
+            # Determine the type of dataset
+            if dataset_name in self.dataset_manager.list_archived_datasets():
+                df = self.dataset_manager.load_archived_dataset(dataset_name)
+            elif dataset_name in self.dataset_manager.list_merged_datasets():
+                df = self.dataset_manager.load_merged_dataset(dataset_name)
+            else:
+                df = self.dataset_manager.load_dataset(dataset_name)
+
+            format = st.selectbox("Download Format", ["csv", "json", "xlsx"], key="download_format_select")
+            self.dataset_manager.download_dataset(df, dataset_name, format)
+        except Exception as e:
+            st.error(f"Download failed: {str(e)}")
+
+    def restore_dataset(self, dataset_name: str):
+        """Restore an archived dataset"""
+        try:
+            if self.dataset_manager.restore_archived_dataset(dataset_name):
+                st.success(f"Dataset '{dataset_name}' restored successfully!")
+            else:
+                st.error(f"Failed to restore dataset '{dataset_name}'")
+        except Exception as e:
+            st.error(f"Restore failed: {str(e)}")
+
+    def run(self):
+        """Main application runner"""
+        st.set_page_config(
+            page_title="DAVYD - Dataset Generator",
+            page_icon="🔥",
+            layout="wide"
+        )
+        st.title("🔥 DAVYD - AI-Powered Dataset Generator")
+
+        model_client, model_name = self.model_config_sidebar()
+        if not model_client or not model_name:
+            return
+
+        self.dataset_structure_interface()
+        self.generation_interface(model_client, model_name)
+
+        # Add generated datasets management to the UI
+        if self.dataset_manager.list_datasets() or self.dataset_manager.list_archived_datasets() or self.dataset_manager.list_merged_datasets():
+            self.generated_datasets_interface()
+
 
 if __name__ == "__main__":
-    main()
+    ui = DatasetUI()
+    ui.run()
