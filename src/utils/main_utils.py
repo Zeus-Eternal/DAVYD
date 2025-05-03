@@ -16,11 +16,12 @@ logger = logging.getLogger(__name__)
 DATA_BIN_DIR = "data_bin"
 TEMP_DIR = os.path.join(DATA_BIN_DIR, "temp")
 ARCHIVE_DIR = os.path.join(DATA_BIN_DIR, "archive")
+MERGED_DIR    = "data_bin/merged_datasets"
+DOCS_URL      = "https://github.com/yourusername/davyd/docs"
 
 # Path to save settings and datasets
 SETTINGS_FILE = "settings.json"
 DATASETS_DIR = TEMP_DIR
-ARCHIVED_DATASETS_DIR = ARCHIVE_DIR
 
 # Ensure directories exist
 os.makedirs(DATA_BIN_DIR, exist_ok=True)
@@ -174,136 +175,5 @@ def download_dataset(df: pd.DataFrame, filename: str, format: str):
     except Exception as e:
         logger.error(f"Failed to download dataset: {e}")
         st.error(f"Failed to download dataset: {e}")
-
-def merge_datasets(datasets_to_merge: List[str], merged_name: str):
-    """Merge multiple datasets into a single dataset."""
-    try:
-        dataframes = []
-        for dataset_name in datasets_to_merge:
-            dataset_path = os.path.join(DATASETS_DIR, dataset_name)
-            try:
-                df = pd.read_csv(dataset_path)
-                if df.empty:
-                    raise pd.errors.EmptyDataError(f"DataFrame from {dataset_name} is empty.")
-                if len(df.columns) == 0:
-                    raise ValueError(f"DataFrame from {dataset_name} has no columns.")
-                dataframes.append(df)
-                logger.info(f"Loaded {dataset_name}, shape: {df.shape}")
-            except pd.errors.EmptyDataError as e:
-                logger.error(f"Error loading {dataset_name}: {e}")
-                st.error(f"Error loading {dataset_name}: {e}")
-                return
-            except ValueError as e:
-                logger.error(f"Error loading {dataset_name}: {e}")
-                st.error(f"Error loading {dataset_name}: {e}")
-                return
-            except pd.errors.ParserError as e:
-                logger.error(f"Error parsing {dataset_name}: {e}")
-                st.error(f"Error parsing {dataset_name}: {e}")
-                return
-            except FileNotFoundError as e:
-                logger.error(f"File not found {dataset_name}: {e}")
-                st.error(f"File not found {dataset_name}: {e}")
-                return
-            except Exception as e:
-                logger.error(f"Unexpected error loading {dataset_name}: {e}")
-                st.error(f"Unexpected error loading {dataset_name}: {e}")
-                return
-
-        if not dataframes:
-            raise ValueError("No valid dataframes to merge.")
-
-        merged_df = pd.concat(dataframes, ignore_index=True)
-        merged_path = os.path.join(DATASETS_DIR, merged_name)
-        merged_df.to_csv(merged_path, index=False)
-        logger.info(f"Merged datasets saved to: {merged_path}")
-        st.success(f"Datasets merged successfully as '{merged_name}'!")
-    except Exception as e:
-        logger.error(f"Failed to merge datasets: {e}")
-        st.error(f"Failed to merge datasets: {e}")
-
-def manage_datasets(dataset_manager: DatasetManager):
-    """Manage datasets (view, edit, delete, archive, merge)."""
-    st.header("📂 Dataset Management")
-
-    try:
-        datasets = [f for f in os.listdir(dataset_manager.temp_dir) if f.endswith((".csv", ".json")) and os.path.getsize(os.path.join(dataset_manager.temp_dir, f)) > 0]
-    except Exception as e:
-        st.error(f"Failed to list datasets: {str(e)}")
-        return
-
-    if not datasets:
-        st.warning("No valid datasets available")
-        return
-
-    selected_dataset = st.selectbox("Select Dataset", datasets)
-    dataset_path = os.path.join(dataset_manager.temp_dir, selected_dataset)
-
-    # Load dataset with error handling
-    try:
-        if selected_dataset.endswith(".csv"):
-            df = load_csv_file(dataset_path)
-        elif selected_dataset.endswith(".json"):
-            df = load_json_file(dataset_path)
-    except Exception as e:
-        st.error(f"Failed to load dataset: {str(e)}")
-        df = pd.DataFrame()
-
-    # Display validation
-    if df.empty:
-        st.warning("This dataset contains no valid data")
-        if st.button("🗑️ Delete Invalid Dataset"):
-            try:
-                os.remove(dataset_path)
-                st.experimental_rerun()
-            except Exception as e:
-                st.error(f"Deletion failed: {str(e)}")
-    else:
-        st.subheader("Dataset Preview")
-        st.dataframe(df.head(50))
-
-        # Data Editor
-        st.subheader("Edit Dataset")
-        edited_df = st.data_editor(
-            df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="data_editor"
-        )
-
-        # Save edited dataset
-        if st.button("💾 Save Edits"):
-            try:
-                if selected_dataset.endswith(".csv"):
-                    edited_df.to_csv(dataset_path, index=False)
-                elif selected_dataset.endswith(".json"):
-                    edited_df.to_json(dataset_path, orient="records", indent=4)
-                st.success("Dataset saved successfully!")
-            except Exception as e:
-                st.error(f"Failed to save dataset: {str(e)}")
-
-    # Archive dataset
-    if st.button("📦 Archive Dataset", key="archive_dataset_management"):
-        try:
-            dataset_manager.archive_dataset(dataset_path)
-            st.success(f"Dataset '{selected_dataset}' archived successfully!")
-        except Exception as e:
-            st.error(f"Error archiving dataset: {str(e)}")
-
-    # Merge datasets
-    st.subheader("Merge Datasets")
-    datasets_to_merge = st.multiselect("Select Datasets to Merge", datasets)
-    merged_name = st.text_input("Merged Dataset Name", "merged_dataset.csv")
-    if st.button("🔀 Merge Datasets"):
-        if not datasets_to_merge:
-            st.warning("Please select at least one dataset to merge.")
-        else:
-            try:
-                merge_datasets(datasets_to_merge, merged_name)
-                st.success(f"Datasets merged successfully as '{merged_name}'!")
-            except Exception as e:
-                st.error(f"Error merging datasets: {str(e)}")
-
-
 
                 

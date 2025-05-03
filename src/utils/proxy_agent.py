@@ -78,3 +78,7 @@ class ProxyAgent:
             validation_results["valid"].extend(retry_results)
         
         return validation_results
+
+    def initiate_chat(self, assistant_agent, message: str):
+        """Compatibility method used by Davyd fallback."""
+        return assistant_agent.generate_dataset_entry(message)

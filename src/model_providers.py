@@ -1,325 +1,307 @@
+#!/usr/bin/env python3
 # src/model_providers.py
-import os
-import logging
-from typing import List, Optional
-from tenacity import retry, stop_after_attempt, wait_exponential
-import google.generativeai as genai
-import openai
-import anthropic
-from ollama import Client  # Ensure this import aligns with the actual library
-import requests  # For Mistral, Groq, and Hugging Face APIs
 
-# Configure logging
+from dataclasses import dataclass
+import logging
+from typing import Any, Dict, List, Optional
+
+import requests
+from requests import HTTPError
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+# Optional imports for hosted/cloud providers
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
+try:
+    import openai
+except ImportError:
+    openai = None
+
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
+
+try:
+    from ollama import Client as OllamaAPIClient
+except ImportError:
+    OllamaAPIClient = None
+
+# configure logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class GenerationConfig:
+    temperature: float = 0.7
+    max_tokens: int = 1024
+    top_p: float = 0.9
+    frequency_penalty: float = 0.0
+    presence_penalty: float = 0.0
+    stop: Optional[List[str]] = None
+
+
 class BaseModelClient:
-    def generate_text(self, prompt: str) -> str:
+    """
+    Abstract base class for all model clients.
+    """
+
+    def generate_text(self, prompt: str, **kwargs) -> str:
         raise NotImplementedError
-        
+
     def list_models(self) -> List[str]:
         raise NotImplementedError
+
+    def chat(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        **kwargs
+    ) -> Dict[str, Any]:
+        prompt = "\n".join(m["content"] for m in messages)
+        text = self.generate_text(prompt, model=model, temperature=temperature, **kwargs)
+        return {"choices": [{"message": {"content": text}}]}
+
+    def health_check(self) -> bool:
+        try:
+            return bool(self.list_models())
+        except Exception:
+            return False
+
 
 class OllamaClient(BaseModelClient):
-    def __init__(self, model: str = "llama2", host: str = "http://localhost:11434", timeout: int = 60):
-        """
-        Initialize the OllamaClient using the Ollama Python library.
+    def __init__(self, host: str = "http://localhost:11434", model: str = "llama2"):
+        if OllamaAPIClient is None:
+            raise ImportError("Ollama Python client not installed.")
+        self.client = OllamaAPIClient(host=host)
+        self.default_model = model
+        self.available_models = self._refresh_models()
+        logger.info(f"[Ollama] initialized with {len(self.available_models)} models")
 
-        :param model: The Ollama model to use for text generation.
-        :param host: The host URL for the Ollama API.
-        :param timeout: Timeout for API requests in seconds.
-        """
-        self.model = model
-        self.host = host
-        self.client = Client(host=host, timeout=timeout)
-        logger.info(f"OllamaClient initialized with model '{self.model}' and host '{self.host}'.")
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_text(self, prompt: str) -> str:
-        """
-        Generate text using the Ollama model with specified parameters.
-
-        :param prompt: The prompt to send to the model.
-        :return: Generated text from Ollama.
-        """
+    def _refresh_models(self) -> List[str]:
         try:
-            logger.debug(f"Generating text with prompt: {prompt}")
-            response = self.client.chat(
-                model=self.model,
-                messages=[{'role': 'user', 'content': prompt}]
-            )
-            generated_text = response['message']['content'].strip()
-            logger.info("Text generation successful.")
-            return generated_text
+            resp = self.client.list()
+            if isinstance(resp, list):
+                return [m["name"] for m in resp if isinstance(m, dict) and "name" in m]
+            elif isinstance(resp, dict) and "models" in resp:
+                return [m["name"] for m in resp["models"] if "name" in m]
         except Exception as e:
-            logger.error(f"Error generating text with Ollama: {e}")
-            raise
+            logger.warning(f"[Ollama] list_models failed: {e}")
+        return [self.default_model]
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    def generate_text(self, prompt: str, **kwargs) -> str:
+        resp = self.client.generate(
+            model=kwargs.get("model", self.default_model),
+            prompt=prompt,
+            options={
+                "temperature": kwargs.get("temperature", 0.7),
+                "top_p":        kwargs.get("top_p", 0.9),
+                "num_predict":  kwargs.get("max_tokens", 1024)
+            }
+        )
+        return resp.get("response", "").strip()
 
     def list_models(self) -> List[str]:
-        """
-        Fetch the list of available models from the Ollama API.
+        return self.available_models
 
-        :return: List of available model names.
-        """
-        try:
-            logger.debug("Fetching available models from Ollama API.")
-            models_response = self.client.list()
-            
-            # Handle different possible response structures
-            if isinstance(models_response, list):
-                # Assume each item is a dict with a 'name' key
-                model_names = [model['name'] for model in models_response if 'name' in model]
-            elif isinstance(models_response, dict) and 'models' in models_response:
-                # Assume 'models' key contains the list
-                model_names = [model['name'] for model in models_response['models'] if 'name' in model]
-            else:
-                # Unexpected format
-                logger.warning("Unexpected format for models response.")
-                model_names = []
-            
-            logger.info(f"Fetched {len(model_names)} models from Ollama API.")
-            return model_names
-        except Exception as e:
-            logger.error(f"Failed to fetch models: {e}")
-            return ["llama2"]  # Default fallback model
-
-    def pull(self, model: str):
-        """
-        Pull a model from the Ollama repository.
-
-        :param model: The model name to pull.
-        """
-        try:
-            logger.info(f"Pulling model '{model}' from Ollama.")
-            self.client.pull(model)
-            logger.info(f"Model '{model}' pulled successfully.")
-        except Exception as e:
-            logger.error(f"Failed to pull model '{model}': {e}")
-            raise
-
-    def delete(self, model: str):
-        """
-        Delete a model from the Ollama repository.
-
-        :param model: The model name to delete.
-        """
-        try:
-            logger.info(f"Deleting model '{model}' from Ollama.")
-            self.client.delete(model)
-            logger.info(f"Model '{model}' deleted successfully.")
-        except Exception as e:
-            logger.error(f"Failed to delete model '{model}': {e}")
-            raise
 
 class DeepSeekClient(BaseModelClient):
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.base_url = "https://api.deepseek.com/v1"
-        
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_text(self, prompt: str) -> str:
+    """
+    DeepSeek.com chat completion client.
+    """
+    BASE_URL = "https://api.deepseek.com/v1"
+
+    def __init__(self, api_key: str, model_name: str = "deepseek-chat"):
+        if not api_key.strip():
+            raise ValueError("DeepSeek API key is required")
+        self.api_key = api_key.strip()
+        self.model_name = model_name
+        logger.info("[DeepSeek] initialized")
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    def generate_text(self, prompt: str, **kwargs) -> str:
         try:
-            headers = {"Authorization": f"Bearer {self.api_key}"}
-            payload = {
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}]
-            }
-            response = requests.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
+            resp = requests.post(
+                f"{self.BASE_URL}/chat/completions",
+                json={
+                    "model":       self.model_name,
+                    "messages":    [{"role": "user", "content": prompt}],
+                    "temperature": kwargs.get("temperature", 0.7),
+                    "top_p":       kwargs.get("top_p", 1.0),
+                    "max_tokens":  kwargs.get("max_tokens", 2048)
+                },
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            logger.error(f"Error generating text with DeepSeek: {e}")
-            raise
+            logger.error(f"[DeepSeek] Generation failed: {e}")
+            return ""
 
     def list_models(self) -> List[str]:
-        return ["deepseek-chat"]
+        return [self.model_name]
+
+    def health_check(self) -> bool:
+        # Always return True; errors surface at generate time
+        return True
+
 
 class GeminiClient(BaseModelClient):
     def __init__(self, api_key: str):
-        try:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-pro')
-        except Exception as e:
-            logger.error(f"Failed to configure Gemini client: {e}")
-            raise
+        if genai is None:
+            raise ImportError("google.generativeai not installed")
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel("gemini-pro")
+        logger.info("[Gemini] initialized")
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_text(self, prompt: str) -> str:
-        try:
-            response = self.model.generate_content(prompt)
-            
-            # Check if the response is valid
-            if not hasattr(response, 'text') or not response.text:
-                logger.error("Gemini API returned an invalid response.")
-                logger.error(f"Response: {response}")
-                raise ValueError("Invalid response from Gemini API")
-            
-            return response.text
-        except Exception as e:
-            logger.error(f"Gemini API Error: {e}")
-            logger.error(f"Prompt: {prompt}")  # Log the prompt for debugging
-            raise
+    def generate_text(self, prompt: str, **kwargs) -> str:
+        resp = self.model.generate_content(prompt)
+        text = getattr(resp, "text", "").strip()
+        if not text:
+            raise ValueError("Empty response from Gemini")
+        return text
 
     def list_models(self) -> List[str]:
-        try:
-            # Gemini currently supports only one model
-            return ["gemini-pro"]
-        except Exception as e:
-            logger.error(f"Failed to list Gemini models: {e}")
-            return []
-        
+        return ["gemini-pro"]
+
+
 class ChatGPTClient(BaseModelClient):
     def __init__(self, api_key: str):
+        if openai is None:
+            raise ImportError("openai not installed")
         openai.api_key = api_key
-        
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_text(self, prompt: str) -> str:
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Error generating text with ChatGPT: {e}")
-            raise
+        logger.info("[ChatGPT] initialized")
+
+    def generate_text(self, prompt: str, **kwargs) -> str:
+        resp = openai.ChatCompletion.create(
+            model=kwargs.get("model", "gpt-4"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=kwargs.get("temperature", 0.7),
+            max_tokens=kwargs.get("max_tokens", 1024),
+            top_p=kwargs.get("top_p", 0.9)
+        )
+        return resp.choices[0].message.content.strip()
 
     def list_models(self) -> List[str]:
         return ["gpt-4", "gpt-3.5-turbo"]
 
+
 class AnthropicClient(BaseModelClient):
     def __init__(self, api_key: str):
+        if anthropic is None:
+            raise ImportError("anthropic not installed")
         self.client = anthropic.Client(api_key=api_key)
-        
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_text(self, prompt: str) -> str:
-        try:
-            response = self.client.completion(
-                prompt=f"\n\nHuman: {prompt}\n\nAssistant:",
-                stop_sequences=[anthropic.HUMAN_PROMPT],
-                model="claude-2",
-                max_tokens_to_sample=1000,
-            )
-            return response['completion']
-        except Exception as e:
-            logger.error(f"Error generating text with Anthropic: {e}")
-            raise
+        logger.info("[Anthropic] initialized")
+
+    def generate_text(self, prompt: str, **kwargs) -> str:
+        resp = self.client.completion(
+            prompt=f"\n\nHuman: {prompt}\n\nAssistant:",
+            stop_sequences=[anthropic.HUMAN_PROMPT],
+            model=kwargs.get("model", "claude-2"),
+            max_tokens_to_sample=kwargs.get("max_tokens", 1024)
+        )
+        return resp["completion"].strip()
 
     def list_models(self) -> List[str]:
         return ["claude-2", "claude-instant-1"]
 
-class ClaudeClient(BaseModelClient):
-    def __init__(self, api_key: str):
-        self.client = anthropic.Client(api_key=api_key)
-        
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_text(self, prompt: str) -> str:
-        try:
-            response = self.client.completion(
-                prompt=f"\n\nHuman: {prompt}\n\nAssistant:",
-                stop_sequences=[anthropic.HUMAN_PROMPT],
-                model="claude-2",
-                max_tokens_to_sample=1000,
-            )
-            return response['completion']
-        except Exception as e:
-            logger.error(f"Error generating text with Claude: {e}")
-            raise
 
-    def list_models(self) -> List[str]:
-        return ["claude-2", "claude-instant-1"]
+class ClaudeClient(AnthropicClient):
+    pass
+
 
 class MistralClient(BaseModelClient):
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://api.mistral.ai/v1"
-        
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_text(self, prompt: str) -> str:
-        try:
-            headers = {"Authorization": f"Bearer {self.api_key}"}
-            payload = {
-                "model": "mistral-medium",
-                "messages": [{"role": "user", "content": prompt}]
-            }
-            response = requests.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
-        except Exception as e:
-            logger.error(f"Error generating text with Mistral: {e}")
-            raise
+        logger.info("[Mistral] initialized")
+
+    def generate_text(self, prompt: str, **kwargs) -> str:
+        resp = requests.post(
+            f"{self.base_url}/chat/completions",
+            json={
+                "model": kwargs.get("model", "mistral-medium"),
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": kwargs.get("temperature", 0.7)
+            },
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout=30
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
 
     def list_models(self) -> List[str]:
         return ["mistral-medium", "mistral-small"]
+
 
 class GroqClient(BaseModelClient):
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://api.groq.com/v1"
-        
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_text(self, prompt: str) -> str:
-        try:
-            headers = {"Authorization": f"Bearer {self.api_key}"}
-            payload = {
-                "model": "groq-1",
-                "messages": [{"role": "user", "content": prompt}]
-            }
-            response = requests.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
-        except Exception as e:
-            logger.error(f"Error generating text with Groq: {e}")
-            raise
+        logger.info("[Groq] initialized")
+
+    def generate_text(self, prompt: str, **kwargs) -> str:
+        resp = requests.post(
+            f"{self.base_url}/chat/completions",
+            json={
+                "model": kwargs.get("model", "groq-1"),
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": kwargs.get("temperature", 0.7)
+            },
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout=30
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
 
     def list_models(self) -> List[str]:
         return ["groq-1", "groq-2"]
 
+
 class HuggingFaceClient(BaseModelClient):
     def __init__(self, api_key: str, endpoint: Optional[str] = None):
-        """
-        Initialize the HuggingFaceClient.
-
-        :param api_key: Hugging Face API key.
-        :param endpoint: Custom endpoint URL (optional). If not provided, uses Hugging Face's hosted API.
-        """
-        self.api_key = api_key
         self.endpoint = endpoint or "https://api-inference.huggingface.co/models"
-        
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def generate_text(self, prompt: str) -> str:
-        try:
-            headers = {"Authorization": f"Bearer {self.api_key}"}
-            payload = {
-                "inputs": prompt
-            }
-            response = requests.post(self.endpoint, json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json()[0]['generated_text']
-        except Exception as e:
-            logger.error(f"Error generating text with Hugging Face: {e}")
-            raise
+        self.headers = {"Authorization": f"Bearer {api_key}"}
+        logger.info("[HuggingFace] initialized")
+
+    def generate_text(self, prompt: str, **kwargs) -> str:
+        resp = requests.post(
+            self.endpoint,
+            headers=self.headers,
+            json={"inputs": prompt},
+            timeout=30
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list) and data and "generated_text" in data[0]:
+            return data[0]["generated_text"].strip()
+        return data.get("text", "").strip()
 
     def list_models(self) -> List[str]:
-        # Hugging Face does not provide a direct API to list models, so return a default list
         return ["gpt2", "flan-t5-large", "mistral-7b"]
 
-# Factory function for creating clients
+
 def get_model_client(provider: str, **kwargs) -> BaseModelClient:
-    providers = {
-        "ollama": OllamaClient,
-        "deepseek": DeepSeekClient,
-        "gemini": GeminiClient,
-        "chatgpt": ChatGPTClient,
-        "anthropic": AnthropicClient,
-        "claude": ClaudeClient,
-        "mistral": MistralClient,
-        "groq": GroqClient,
-        "huggingface": HuggingFaceClient
+    mapping = {
+        "ollama":      OllamaClient,
+        "deepseek":    DeepSeekClient,
+        "gemini":      GeminiClient,
+        "chatgpt":     ChatGPTClient,
+        "anthropic":   AnthropicClient,
+        "claude":      ClaudeClient,
+        "mistral":     MistralClient,
+        "groq":        GroqClient,
+        "huggingface": HuggingFaceClient,
     }
-    
-    provider_class = providers.get(provider.lower())
-    if not provider_class:
+    cls = mapping.get(provider.lower())
+    if not cls:
         raise ValueError(f"Unknown provider: {provider}")
-    
-    return provider_class(**kwargs)
+    return cls(**kwargs)

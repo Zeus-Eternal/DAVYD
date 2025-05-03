@@ -1,0 +1,49 @@
+DAVYD
+├── .gitignore
+├── DAVYD_SM.jpg
+├── Dockerfile
+├── README.md
+├── data_bin
+│   ├── archive
+│   ├── datasets_meta.json
+│   ├── merged_datasets
+│   │   └── merged_dataset.csv
+│   └── temp
+├── requirements.txt
+├── settings.json
+├── setup_env.sh
+├── src
+│   ├── autogen_client
+│   │   ├── assistant_agent.py
+│   │   ├── data_validator.py
+│   │   ├── field_suggester.py
+│   │   ├── intelligent_suggester.py
+│   │   ├── scheduler.py
+│   │   ├── template_manager.py
+│   │   ├── templates
+│   │   │   ├── custom_template.json
+│   │   │   ├── intent_classification.json
+│   │   │   └── sentiment_analysis.json
+│   │   └── visualization.py
+│   ├── dataset_generation.py
+│   ├── dataset_model.py
+│   ├── davyd.py
+│   ├── model_client.py
+│   ├── model_providers.py
+│   ├── prompt_engineering.py
+│   ├── templates
+│   ├── ui
+│   │   ├── menu.py
+│   │   ├── sidebar.py
+│   │   ├── tabs.py
+│   │   └── theme_manager.py
+│   ├── ui_desktop.py
+│   ├── ui_streamlit.py
+│   └── utils
+│       ├── main_utils.py
+│       ├── manage_dataset.py
+│       └── proxy_agent.py
+├── test
+│   ├── test_davyd_dataset_generator.py
+│   └── test_ollama_client.py
+└── tree.txt

@@ -1,21 +1,30 @@
-import os
+#!/usr/bin/env python3
+# src/davyd.py
+
+import json
+import re
+from json import JSONDecodeError
 import logging
+from typing import List, Dict, Any, Optional
 import pandas as pd
-from typing import List, Dict, Optional
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+from model_providers import BaseModelClient, GenerationConfig
 from utils.manage_dataset import DatasetManager
+from prompt_engineering import PromptEngineer
 from autogen_client.template_manager import TemplateManager
 from autogen_client.data_validator import DataValidator
 from autogen_client.visualization import Visualization
-from model_providers import BaseModelClient
 from autogen_client.assistant_agent import AssistantAgent
 from utils.proxy_agent import ProxyAgent
 
-# Configure logging
 logger = logging.getLogger(__name__)
+
 
 class Davyd:
     """
-    Core class for generating and managing datasets using DAVYD.
+    Core class for generating, validating, and saving synthetic datasets.
+    Supports both direct LLM generation and an AutogenAgent fallback.
     """
 
     def __init__(
@@ -26,238 +35,182 @@ class Davyd:
         dataset_manager: DatasetManager,
         section_separator: str = "|",
         data_separator: str = '"',
-        max_retries: int = 2,
+        quality_level: int = 2,  # 1=Fast, 2=Balanced, 3=High
     ):
-        """
-        Initialize the Davyd dataset generator.
-
-        Args:
-            num_entries (int): Number of entries to generate.
-            model_client (BaseModelClient): The model client to use for generation.
-            model_name (str): Name of the model to use.
-            dataset_manager (DatasetManager): DatasetManager instance for managing datasets.
-            section_separator (str): The separator used to split fields (e.g., "|", ":", "-", "~").
-            data_separator (str): The separator used to wrap field values (e.g., '"', "'").
-            max_retries (int): Maximum number of retries if the dataset is incomplete.
-        """
-        self.num_entries = num_entries
-        self.model_client = model_client
-        self.model_name = model_name
-        self.dataset_manager = dataset_manager
+        self.num_entries       = num_entries
+        self.model_client      = model_client
+        self.model_name        = model_name
+        self.dataset_manager   = dataset_manager
         self.section_separator = section_separator
-        self.data_separator = data_separator
-        self.max_retries = max_retries
-        self.dataset: List[Dict] = []
-        self.fields: List[str] = []
+        self.data_separator    = data_separator
+
+        # Helper components
+        self.prompt_engineer  = PromptEngineer()
         self.template_manager = TemplateManager()
-        self.data_validator = DataValidator()
-        self.visualization = Visualization()
+        self.data_validator    = DataValidator()
+        self.visualization     = Visualization()
+
+        # Setup assistant‐based fallback
+        self.set_quality(quality_level)
+        agent_cfg = {
+            "model_client": self.model_client,
+            "model_name":   self.model_name,
+            "max_retries":  getattr(self, "max_retries", 1)
+        }
+        self.assistant_agent = AssistantAgent(agent_cfg, "assistant")
+        proxy_cfg = {**agent_cfg, "num_agents": 1}
+        self.proxy_agent     = ProxyAgent(proxy_cfg)
+
+        self.dataset = pd.DataFrame()
+        self.fields  = []
         logger.info(
-            f"Davyd initialized with {num_entries} entries using {model_name}, "
-            f"section separator '{section_separator}', and data separator '{data_separator}'"
+            f"Davyd initialized: entries={num_entries}, "
+            f"model={model_name}, sep='{section_separator}', "
+            f"wrap='{data_separator}', quality={quality_level}"
         )
 
-    def generate_dataset(self, heading: str, example_rows: List[str]) -> None:
+    def set_quality(self, level: int):
+        """Configure generation parameters based on quality level."""
+        presets = {
+            1: dict(temperature=0.7, top_p=1.0, max_retries=1),
+            2: dict(temperature=0.5, top_p=0.9, max_retries=2),
+            3: dict(temperature=0.3, top_p=0.7, max_retries=3),
+        }
+        cfg = presets.get(level, presets[2])
+        self.temperature = cfg["temperature"]
+        self.top_p       = cfg["top_p"]
+        self.max_retries = cfg["max_retries"]
+
+    def generate_dataset(
+        self,
+        heading: str,
+        example_rows: List[str]
+    ) -> pd.DataFrame:
         """
-        Generate a dataset based on the provided structure.
-
-        Args:
-            heading (str): Separator-separated field names.
-            example_rows (List[str]): Example data rows.
-
-        Raises:
-            ValueError: If the heading format is invalid.
+        Generate dataset using AutogenAgent as the sole generation method.
+        Retries on failure and returns partial if ≥50% succeeded.
         """
         if not self._validate_heading_format(heading):
             raise ValueError("Invalid heading format")
 
-        self.fields = [field.strip().strip(self.data_separator) for field in heading.split(self.section_separator)]
+        self.fields = [
+            f.strip().strip(self.data_separator)
+            for f in heading.split(self.section_separator)
+        ]
 
-        retries = 0
-        while len(self.dataset) < self.num_entries and retries < self.max_retries:
-            prompt = self._create_advanced_prompt(self.fields, example_rows)
-            logger.info(f"Generating dataset with prompt: {prompt[:200]}...")
+        remaining = self.num_entries
+        records: List[Dict[str, Any]] = []
+
+        while remaining > 0:
+            prompt = self._build_prompt(remaining, heading, example_rows)
+            logger.debug(f"[Autogen Prompt]\n{prompt}")
 
             try:
-                response = self.model_client.generate_text(prompt)
-                self._process_response(response, self.fields)
-                if len(self.dataset) < self.num_entries:
-                    retries += 1
-                    logger.warning(f"Dataset incomplete. Retrying ({retries}/{self.max_retries})...")
+                raw = self._autogen_generate(prompt)
+                new_recs = self._parse_response(raw)
+                valid = [r for r in new_recs if self._is_valid_entry(r)]
+                records.extend(valid)
+                remaining = self.num_entries - len(records)
+                logger.info(f"✅ Autogen: {len(valid)} valid records | {remaining} remaining")
+
             except Exception as e:
-                logger.error(f"Dataset generation failed: {e}")
+                logger.exception("❌ Autogen generation failed")
+                if len(records) >= self.num_entries * 0.5:
+                    break
                 raise
 
+        self.dataset = pd.DataFrame(records[: self.num_entries])
         if len(self.dataset) < self.num_entries:
-            logger.warning(f"Failed to generate {self.num_entries} entries after {self.max_retries} retries.")
-        else:
-            logger.info(f"Generated {len(self.dataset)} entries")
+            logger.warning(
+                f"⚠️ Partial dataset generated: {len(self.dataset)}/{self.num_entries} entries"
+            )
+        return self.dataset
+
+    def _build_prompt(
+        self,
+        remaining: int,
+        heading: str,
+        example_rows: List[str]
+    ) -> str:
+        """Construct prompt with error‐resilient templating."""
+        try:
+            tmpl = self.template_manager.load_templates().get("generation", {})
+            if isinstance(tmpl, dict) and "prompt" in tmpl:
+                return tmpl["prompt"].format(
+                    fields=heading,
+                    examples="\n".join(example_rows),
+                    remaining=remaining
+                )
+        except Exception:
+            logger.warning("Autogen template missing; falling back")
+
+        # Standard PromptEngineer
+        return self.prompt_engineer.build_generation_prompt(
+            fields=[f.strip() for f in heading.split(self.section_separator) if f.strip()],
+            examples=example_rows,
+            num_entries=remaining
+        )
+
+    def _autogen_generate(self, prompt: str) -> str:
+        """Use ProxyAgent+AssistantAgent to get a string reply."""
+        self.proxy_agent.initiate_chat(self.assistant_agent, message=prompt)
+        raw = self.assistant_agent.last_message()
+        if not isinstance(raw, str):
+            logger.warning(f"Non‐string autogen response: {raw!r}")
+            return ""
+        logger.debug(f"[AUTOGEN RAW RESPONSE]\n{raw}")
+        return raw
+
+    def _parse_response(self, raw: str) -> List[Dict[str, Any]]:
+        """Parse JSON list/dict first, else line‐by‐line via separator."""
+        logger.debug(f"Raw output:\n{raw}")
+        # JSON‐first
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return [data]
+        except JSONDecodeError:
+            pass
+
+        # Fallback: split lines by section_separator
+        records = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith(("```", "#", "---")):
+                continue
+            parts = [p.strip() for p in line.split(self.section_separator)]
+            if len(parts) == len(self.fields):
+                records.append(dict(zip(self.fields, parts)))
+        return records
+
+    def _is_valid_entry(self, entry: Dict[str, Any]) -> bool:
+        """Ensure no field is missing or empty."""
+        return all(entry.get(f) not in (None, "") for f in self.fields)
 
     def _validate_heading_format(self, heading: str) -> bool:
-        """
-        Validate the format of the heading.
+        """Heading must wrap fields in data_separator and use section_separator."""
+        parts = heading.split(self.section_separator)
+        return (
+            len(parts) > 1
+            and all(p.startswith(self.data_separator) and p.endswith(self.data_separator) for p in parts)
+        )
 
-        Args:
-            heading (str): The heading to validate.
+    def save_dataset(self, base_name: str = "dataset") -> str:
+        """Save current DataFrame to a temp CSV and return its path."""
+        if self.dataset.empty:
+            raise ValueError("No dataset to save")
+        filepath = self.dataset_manager.get_temp_filename(base_name)
+        self.dataset_manager.save_dataset(self.dataset, filepath, which="temp", overwrite=False)
+        logger.info("Dataset saved to %s", filepath)
+        return filepath
 
-        Returns:
-            bool: True if valid, False otherwise.
-        """
-        return self.section_separator in heading
+    def visualize(self, **kwargs) -> Any:
+        """Delegate rendering to Visualization."""
+        return self.visualization.render(self.dataset, **kwargs)
 
-    def _create_advanced_prompt(self, fields: List[str], body_examples: List[str] = None) -> str:
-        """
-        Create a prompt for structured data generation.
-
-        Args:
-            fields (List[str]): List of field names.
-            body_examples (List[str], optional): Example rows. Defaults to None.
-
-        Returns:
-            str: Generated prompt.
-        """
-        prompt = f"Generate exactly {self.num_entries} {self.section_separator}-separated rows matching this structure:\n\n"
-        prompt += self.section_separator.join([f'{self.data_separator}{field}{self.data_separator}' for field in fields])
-        prompt += "\n\nEach row should adhere to these field descriptions:\n\n"
-
-        # Field descriptions
-        field_descriptions = {
-            "text": "A meaningful sentence or statement",
-            "intent": "The primary goal or purpose (e.g., 'information_request')",
-            "sentiment": "Emotional tone (positive/neutral/negative)",
-            "sentiment_polarity": "Numerical value between -1.0 and 1.0",
-            "tone": "Delivery style (friendly/formal/urgent)",
-            "category": "Domain or subject area",
-            "keywords": "Key phrases summarizing the content"
-        }
-
-        for field in fields:
-            description = field_descriptions.get(field.lower(), "Relevant data for this field")
-            prompt += f"- {field}: {description}\n"
-
-        if body_examples:
-            prompt += "\nExample Rows:\n"
-            for example in body_examples:
-                prompt += example + "\n"
-
-        prompt += "\nInstructions:\n"
-        prompt += "- Maintain consistent data types\n"
-        prompt += "- Ensure realistic and varied data\n"
-        prompt += f"- Format: {self.section_separator}-separated values with {self.data_separator}-quoted fields\n"
-        prompt += f"- Generate exactly {self.num_entries} rows\n"  # Explicit instruction
-
-        return prompt
-
-    def _process_response(self, response: str, fields: List[str]) -> None:
-        """
-        Process the model response and populate the dataset.
-
-        Args:
-            response (str): Raw response from the model.
-            fields (List[str]): List of field names.
-        """
-        rows = response.strip().split("\n")
-        for row in rows:
-            try:
-                entry = self._parse_example(row, fields)
-                if entry and self._is_valid_entry(entry):
-                    self.dataset.append(entry)
-                    if len(self.dataset) >= self.num_entries:
-                        break
-            except Exception as e:
-                logger.warning(f"Skipping invalid row: {e}")
-
-    def _parse_example(self, example: str, fields: List[str]) -> Dict:
-        """
-        Parse a separator-separated row into a dictionary.
-
-        Args:
-            example (str): The row to parse.
-            fields (List[str]): Field names.
-
-        Returns:
-            Dict: Parsed dictionary.
-
-        Raises:
-            ValueError: If the row has an incorrect number of values.
-        """
-        values = [v.strip().strip(self.data_separator) for v in example.split(self.section_separator)]
-        if len(values) != len(fields):
-            raise ValueError(f"Row has incorrect number of values: {example}")
-        return {fields[i]: values[i] for i in range(len(fields))}
-
-    def _is_valid_entry(self, entry: Dict) -> bool:
-        """
-        Validate a dataset entry.
-
-        Args:
-            entry (Dict): The entry to validate.
-
-        Returns:
-            bool: True if valid, False otherwise.
-        """
-        for field in self.fields:
-            if field not in entry or not entry[field]:
-                return False
-        return True
-
-    def get_dataset_as_df(self) -> pd.DataFrame:
-        """
-        Get the dataset as a pandas DataFrame.
-
-        Returns:
-            pd.DataFrame: The generated dataset.
-        """
-        return pd.DataFrame(self.dataset)
-
-    def save_dataset(self, base_name: str = "generated_dataset") -> str:
-        """
-        Save the dataset to a file using the DatasetManager.
-
-        Args:
-            base_name (str): Base name for the file.
-
-        Returns:
-            str: Path to the saved file.
-        """
-        try:
-            filename = self.dataset_manager.get_temp_filename(base_name)
-            df = self.get_dataset_as_df()
-            self.dataset_manager.save_csv_file(df, filename)
-            logger.info(f"Dataset saved to {filename}")
-            return filename
-        except Exception as e:
-            logger.error(f"Error saving dataset: {e}")
-            raise
-
-    def use_autogen_for_generation(self, fields: List[str], example_rows: List[str]) -> None:
-        """
-        Use AutoGen to dynamically generate and validate the dataset.
-
-        Args:
-            fields (List[str]): List of field names.
-            example_rows (List[str]): Example data rows.
-        """
-        assistant = AssistantAgent("assistant")
-        user_proxy = ProxyAgent("user_proxy")
-
-        retries = 0
-        while len(self.dataset) < self.num_entries and retries < self.max_retries:
-            prompt = self._create_advanced_prompt(fields, example_rows)
-            logger.info(f"Using AutoGen to generate dataset with prompt: {prompt[:200]}...")
-
-            try:
-                user_proxy.initiate_chat(assistant, message=prompt)
-                response = assistant.last_message()["content"]
-                self._process_response(response, fields)
-                if len(self.dataset) < self.num_entries:
-                    retries += 1
-                    logger.warning(f"Dataset incomplete. Retrying ({retries}/{self.max_retries})...")
-            except Exception as e:
-                logger.error(f"Dataset generation failed: {e}")
-                raise
-
-        if len(self.dataset) < self.num_entries:
-            logger.warning(f"Failed to generate {self.num_entries} entries after {self.max_retries} retries.")
-        else:
-            logger.info(f"Generated {len(self.dataset)} entries")
+    def validate_entry(self, entry: str) -> str:
+        """LLM‐driven single‐row validation."""
+        prompt = self.prompt_engineer.build_validation_prompt(entry, self.fields)
+        return self.model_client.generate_text(prompt, temperature=0.1)

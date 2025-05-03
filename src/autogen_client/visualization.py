@@ -1,56 +1,101 @@
-# autogen_client/visualization.py
 import plotly.express as px
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 import pandas as pd
-import streamlit as st
+from wordcloud import WordCloud
+from typing import Dict, Any, Optional
+from dataclasses import dataclass
+import base64
+from io import BytesIO
+
+@dataclass
+class FigureData:
+    """Container for visualization data with multiple output formats"""
+    plotly_figure: Optional[Any] = None
+    matplotlib_figure: Optional[Any] = None
+    image_bytes: Optional[bytes] = None
+    title: str = ""
 
 class Visualization:
-    """Class for generating data visualizations"""
+    """Enhanced visualization generator with multi-format support"""
 
-    def generate_dashboard(self, df: pd.DataFrame):
-        """Generate a dashboard with various charts"""
-        st.subheader("📊 Data Quality Dashboard")
+    def __init__(self):
+        self._figure_cache = {}
 
-        # Intent Distribution (Pie Chart)
+    def generate_dashboard(self, df: pd.DataFrame) -> Dict[str, FigureData]:
+        figures = {}
+
         if "intent" in df.columns:
-            intent_counts = df['intent'].value_counts().reset_index()
-            intent_counts.columns = ['Intent', 'Count']
-            fig = px.pie(intent_counts, names='Intent', values='Count', title='Intent Distribution')
-            st.plotly_chart(fig)
+            figures['intent'] = self._create_pie_chart(df, 'intent', 'Intent Distribution')
 
-        # Sentiment Distribution (Bar Chart)
         if "sentiment" in df.columns:
-            sentiment_counts = df['sentiment'].value_counts().reset_index()
-            sentiment_counts.columns = ['Sentiment', 'Count']
-            fig = px.bar(sentiment_counts, x='Sentiment', y='Count', title='Sentiment Distribution', color='Sentiment')
-            st.plotly_chart(fig)
+            figures['sentiment'] = self._create_bar_chart(df, 'sentiment', 'Sentiment Distribution')
 
-        # Sentiment Polarity Distribution (Histogram)
         if "sentiment_polarity" in df.columns:
-            fig = px.histogram(df, x='sentiment_polarity', nbins=20, title='Sentiment Polarity Distribution')
-            st.plotly_chart(fig)
+            figures['sentiment_polarity'] = self._create_histogram(df, 'sentiment_polarity', 'Sentiment Polarity Distribution', 20)
 
-        # Tone Distribution (Bar Chart)
         if "tone" in df.columns:
-            tone_counts = df['tone'].value_counts().reset_index()
-            tone_counts.columns = ['Tone', 'Count']
-            fig = px.bar(tone_counts, x='Tone', y='Count', title='Tone Distribution', color='Tone')
-            st.plotly_chart(fig)
+            figures['tone'] = self._create_bar_chart(df, 'tone', 'Tone Distribution')
 
-        # Category Distribution (Pie Chart)
         if "category" in df.columns:
-            category_counts = df['category'].value_counts().reset_index()
-            category_counts.columns = ['Category', 'Count']
-            fig = px.pie(category_counts, names='Category', values='Count', title='Category Distribution')
-            st.plotly_chart(fig)
+            figures['category'] = self._create_pie_chart(df, 'category', 'Category Distribution')
 
-        # Keywords Distribution (Word Cloud)
         if "keywords" in df.columns:
-            from wordcloud import WordCloud
-            import matplotlib.pyplot as plt
-            keyword_text = ' '.join(df['keywords'].dropna().astype(str))
-            wordcloud = WordCloud(width=800, height=400, background_color='white').generate(keyword_text)
-            fig, ax = plt.subplots()
-            ax.imshow(wordcloud, interpolation='bilinear')
-            ax.axis('off')
-            st.pyplot(fig)
+            figures['keywords'] = self._create_wordcloud(df['keywords'], 'Keywords Distribution')
+
+        self._figure_cache = figures
+        return figures
+
+    def _create_pie_chart(self, df: pd.DataFrame, column: str, title: str) -> FigureData:
+        counts = df[column].value_counts().reset_index()
+        counts.columns = ['Label', 'Count']
+        fig = px.pie(counts, names='Label', values='Count', title=title)
+        return FigureData(plotly_figure=fig, title=title)
+
+    def _create_bar_chart(self, df: pd.DataFrame, column: str, title: str) -> FigureData:
+        counts = df[column].value_counts().reset_index()
+        counts.columns = ['Label', 'Count']
+        fig = px.bar(counts, x='Label', y='Count', title=title, color='Label')
+        return FigureData(plotly_figure=fig, title=title)
+
+    def _create_histogram(self, df: pd.DataFrame, column: str, title: str, bins: int) -> FigureData:
+        fig = px.histogram(df, x=column, nbins=bins, title=title)
+        return FigureData(plotly_figure=fig, title=title)
+
+    def _create_wordcloud(self, series: pd.Series, title: str) -> FigureData:
+        text = ' '.join(series.dropna().astype(str))
+        wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
+
+        fig, ax = plt.subplots()
+        ax.imshow(wordcloud, interpolation='bilinear')
+        ax.axis('off')
+
+        img_bytes = self._fig_to_bytes(fig)
+        plt.close(fig)
+
+        return FigureData(
+            matplotlib_figure=wordcloud,
+            image_bytes=img_bytes,
+            title=title
+        )
+
+    def _fig_to_bytes(self, fig) -> bytes:
+        buf = BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight', dpi=300)
+        buf.seek(0)
+        return buf.getvalue()
+
+    def get_figure_as_html(self, figure_name: str) -> Optional[str]:
+        if figure_name in self._figure_cache:
+            fig_data = self._figure_cache[figure_name]
+            if fig_data.plotly_figure:
+                return fig_data.plotly_figure.to_html(full_html=False)
+        return None
+
+    def get_figure_as_image(self, figure_name: str) -> Optional[str]:
+        if figure_name in self._figure_cache:
+            fig_data = self._figure_cache[figure_name]
+            if fig_data.plotly_figure:
+                return fig_data.plotly_figure.to_image(format='png')
+            elif fig_data.image_bytes:
+                return base64.b64encode(fig_data.image_bytes).decode('utf-8')
+        return None

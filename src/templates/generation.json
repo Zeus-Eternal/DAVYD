@@ -1,0 +1,4 @@
+{
+    "prompt": "You are a synthetic dataset generator.\n\nUse the following field schema:\n{fields}\n\nHere are example entries:\n{examples}\n\nNow generate {remaining} new entries that strictly follow the same format. Use '|' as the separator, and double quotes for string fields. Do NOT include any explanations, comments, or formatting — output only raw data rows, one per line."
+  }
+  

@@ -1,5 +1,22 @@
 {
-    "Gemini": {
-        "api_key": "AIzaSyCSfua0U_AiWVm-qJZj22v_f66OW692ju0"
-    }
+  "fields": [
+    "text",
+    "intent",
+    "sentiment",
+    "sentiment_polarity",
+    "tone",
+    "category",
+    "keywords"
+  ],
+  "examples": [
+    "\"Hi there!\"|\"greeting\"|\"positive\"|0.9|\"friendly\"|\"interaction\"|\"hi\" \"hello\" \"welcome\"",
+    "\"Thanks a lot!\"|\"gratitude\"|\"positive\"|0.8|\"warm\"|\"interaction\"|\"thanks\" \"appreciate\"",
+    "\"What's your name?\"|\"question\"|\"neutral\"|0.0|\"curious\"|\"interaction\"|\"name\" \"ask\""
+  ],
+  "data_separator": "\"",
+  "section_separator": "|",
+  "model_provider": "DeepSeek",
+  "model_name": "deepseek-chat",
+  "api_key": "sk-7e1b2b40aad343e7822265b338776785",
+  "dark_mode": true
 }
