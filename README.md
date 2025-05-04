@@ -1,227 +1,230 @@
-# DAVYD - AI-Powered Dataset Generator
+# DAVYD – AI-Powered Dataset Generator 🚀🔥  
+
+> **This is the _Zeus Eternal_ desktop fork.**  
+> Upstream project by **[agustealo](https://github.com/agustealo/DAVYD)** · Desktop revamp by **[Zeus Eternal](https://github.com/Zeus-Eternal)**
 
 ![DAVYD Logo](DAVYD_SM.jpg)
 
-**Developer:** agustealo  
-**Website:** [agustealo.com](https://agustealo.com)  
-**Email:** [agustealo@gmail.com](mailto:agustealo@gmail.com)
+---
+
+## ❓ Why this fork?
+
+| &nbsp; | Upstream `agustealo/DAVYD` | **Zeus-Eternal Fork** |
+|-------|----------------------------|-----------------------|
+| **Interface** | Streamlit web app | **PySide6 desktop GUI** (`src/ui_desktop.py`) |
+| **Generation core** | Direct LLM ➜ optional Autogen fallback | **Autogen is the default path** – `AssistantAgent + ProxyAgent` |
+| **Concurrency** | Synchronous | Qt `QThread` for non-blocking generation |
+| **Run command** | `streamlit run src/ui.py` | `python src/ui_desktop.py` |
+| **Legacy support** | – | Streamlit UI kept as `src/ui_streamlit.py` |
+
+If you like DAVYD but prefer a native window ― or need long-running generation without blocking the UI ― this fork is for you.
+
+---
+
+## 🗒️ Change Log
+
+| Date&nbsp; | Version | Notes |
+|------------|---------|-------|
+| **2025-05-03** | `v2.0` | Initial desktop release: PySide6 rewrite, themed tabs/menu, full Autogen pipeline, threaded generation, dark/light toggle. |
+| 2025-05-03 | `v2.0.1` | Fixed missing `use_autogen` arg; added error pop-ups & progress signals. |
+| 2025-05-03 | `v2.0.2` | Provider health-check, graceful Ollama absence, `.gitignore` clean-up. |
+
+Detailed commit history lives in the **[GitHub “Commits” tab](../../commits/main)**.
 
 ---
 
 ## Table of Contents
-
 - [What is DAVYD?](#what-is-davyd)
 - [Key Features](#key-features)
 - [Installation](#installation)
-  - [Prerequisites](#prerequisites)
-  - [Clone the Repository](#clone-the-repository)
-  - [Install Dependencies](#install-dependencies)
 - [Getting Started](#getting-started)
-  - [Run the Application](#run-the-application)
-  - [Define Your Dataset](#define-your-dataset)
-  - [Generate and Manage Datasets](#generate-and-manage-datasets)
-- [Acronym Breakdown: DAVYD](#acronym-breakdown-davyd)
+- [Acronym Breakdown](#acronym-breakdown-davyd)
 - [Features Overview](#features-overview)
-  - [1. Streamlit UI](#1-streamlit-ui)
-  - [2. AI Model Integration](#2-ai-model-integration)
-  - [3. Data Validation](#3-data-validation)
-  - [4. Dataset Management](#4-dataset-management)
 - [Usage Examples](#usage-examples)
 - [Contribution](#contribution)
-  - [How to Contribute](#how-to-contribute)
 - [License](#license)
 - [Support](#support)
 
 ---
 
-## What is DAVYD?
+## 🤖 What is DAVYD?
 
-**DAVYD** (Dynamic AI Virtual Yielding Dataset) is an intelligent dataset generator powered by advanced AI models. It allows developers, researchers, and data scientists to generate structured datasets tailored for machine learning and AI workflows. Designed with flexibility and scalability in mind, DAVYD simplifies the process of creating realistic, high-quality datasets that adhere to specific fields and descriptions.
-
----
-
-## Key Features
-
-- **Customizable Dataset Structure**: Define your own fields and examples to generate structured datasets.
-- **AI-Driven Generation**: Leverages cutting-edge AI models from providers like Ollama, DeepSeek, Gemini, ChatGPT, Anthropic, Claude, Mistral, Groq, and HuggingFace.
-- **Validation & Quality Assurance**: Built-in data validation ensures all generated datasets meet specified requirements.
-- **Flexible Output Formats**: Save datasets as CSV, JSON, or Excel for seamless integration with existing workflows.
-- **User-Friendly Interface**: Streamlit-based web interface for defining, generating, and managing datasets.
-- **Dataset Management**: Archive, restore, merge, and download datasets easily.
-- **Data Quality Insights**: Visualize dataset quality metrics with modern, interactive charts.
+**DAVYD** (Dynamic AI Virtual Yielding Dataset) is an intelligent dataset generator powered by LLMs.  
+It enables developers and data-scientists to **define a schema → generate a realistic dataset → validate / visualise / export** with minimal friction.
 
 ---
 
-## Installation
+## ✨ Key Features
 
-### Prerequisites
+* **Customisable schema** – define any number of fields & example rows.  
+* **Multi-provider generation** – Ollama, DeepSeek, Gemini, ChatGPT, Anthropic, Claude, Mistral, Groq, HuggingFace.  
+* **Autogen agent stack** (desktop fork) – resilient, self-healing generation.  
+* **Validation + quality dashboards** – catch issues early.  
+* **Dataset life-cycle** – archive, restore, merge, delete, download.  
+* **Multiple export formats** – CSV / JSON / Excel.  
+* **Two UIs** – modern PySide6 desktop **or** Streamlit web for quick demos.
 
-- **Python 3.7 or higher**
-- **pip**
-- **Git**
+---
 
-### Clone the Repository
+## 🛠️ Installation
 
-```sh
-git clone https://github.com/agustealo/DAVYD.git
+```bash
+# 1. clone the fork
+git clone https://github.com/Zeus-Eternal/DAVYD.git
 cd DAVYD
-```
 
-### Install Dependencies
-
-Create a virtual environment and install the required libraries:
-
-```sh
+# 2. create venv + install deps
 python -m venv env
-# Activate the virtual environment:
-# On macOS/Linux:
-source env/bin/activate
-# On Windows:
-env\Scripts\activate
-
+source env/bin/activate      # <─ Windows: env\Scripts\activate
 pip install -r requirements.txt
+````
+
+### Optional extras
+
+- **Desktop only** – PySide6 is already in `requirements.txt`.
+    
+- **Streamlit UI** – Streamlit is also included; nothing extra to do.
+    
+
+---
+
+## 🚀 Getting Started
+
+### Run the desktop GUI
+
+```bash
+python src/ui_desktop.py
 ```
 
----
+### (or) launch the classic Streamlit UI
 
-## Getting Started
-
-### Run the Application
-
-Launch the Streamlit interface:
-
-```sh
-streamlit run src/ui.py
+```bash
+streamlit run src/ui_streamlit.py
 ```
 
-Access the app in your browser at [http://localhost:8501](http://localhost:8501).
-
-### Define Your Dataset
-
-1. **Navigate to the "Dataset Structure" Section**:
-   - Add fields and examples manually or use a preloaded template.
-2. **Configure Generation Parameters**:
-   - Set the number of entries and select an AI provider and model.
-3. **Generate Dataset**:
-   - Click on the "✨ Generate Dataset" button to create your dataset based on the defined structure.
-
-### Generate and Manage Datasets
-
-1. **View Generated Dataset**:
-   - Once the dataset is generated, you can view and edit it in the data editor.
-2. **Manage Datasets**:
-   - **Archive**: Save the dataset to the archive directory.
-   - **Download**: Export the dataset in CSV, JSON, or Excel format.
-   - **Merge**: Combine multiple datasets into a single dataset.
-   - **Delete**: Remove datasets from the active, archive, or merged directories.
-   - **Restore**: Restore archived datasets to the active directory.
+Then open [http://localhost:8501](http://localhost:8501/) in your browser.
 
 ---
 
-## Acronym Breakdown: DAVYD
+### Define your dataset (schema → examples → generate)
 
-- **D**: Dynamic
-- **A**: AI
-- **V**: Virtual
-- **Y**: Yielding
-- **D**: Dataset
-
----
-
-## Features Overview
-
-### 1. Streamlit UI
-
-- **Interactive Layout**: Define fields, view live previews, and generate datasets with ease.
-- **Dynamic Field Management**: Add, edit, and delete fields and examples.
-- **Data Editor**: Edit generated datasets in a user-friendly table format.
-- **Visualization**: View data quality metrics and insights with modern, interactive charts.
-
-### 2. AI Model Integration
-
-- **Multiple AI Models Support**: Integrates with various AI models via the Ollama API and other providers.
-- **Dynamic Model Fetching**: Automatically fetches and utilizes available models for data generation.
-
-### 3. Data Validation
-
-- **Field Validation**: Ensures all required fields are present and correctly formatted.
-- **Consistency Checks**: Validates data types and value ranges to maintain dataset integrity.
-- **Detailed Logging**: Provides warnings and errors for any validation issues encountered.
-
-### 4. Dataset Management
-
-- **Archive**: Save datasets to the archive directory for long-term storage.
-- **Restore**: Restore archived datasets to the active directory.
-- **Merge**: Combine multiple datasets into a single dataset.
-- **Delete**: Remove datasets from the active, archive, or merged directories.
-- **Download**: Export datasets in CSV, JSON, or Excel format.
+1. **Dataset Structure tab**
+    
+    - Add field names & a few example rows.
+        
+2. **Generation tab**
+    
+    - Pick provider, paste API key (or Ollama URL), choose a model.
+        
+    - Set “Entries” + “Quality” → **✨ Generate Dataset**.
+        
+3. **Visualisation tab**
+    
+    - Inspect the live table, search, plot histograms, pie charts, etc.
+        
+4. **Management tab**
+    
+    - Archive, restore, merge, download, or delete datasets.
+        
 
 ---
 
-## Usage Examples
+## 🔤 Acronym Breakdown: DAVYD
 
-### Example 1: Generating a Sentiment Analysis Dataset
-
-1. **Define Fields**: `text`, `intent`, `sentiment`, `sentiment_polarity`, `tone`, `category`, `keywords`.
-2. **Provide Examples**:
-   - `"I love this product!"`, `"affirmation"`, `"positive"`, `0.9`, `"enthusiastic"`, `"review"`, `"love, product"`
-   - `"This is disappointing."`, `"complaint"`, `"negative"`, `-0.7`, `"dissatisfied"`, `"experience"`, `"disappointment, bad"`
-3. **Generate Dataset**: Click "✨ Generate Dataset" to create 150 entries.
-4. **Export**: Save the dataset as `sentiment_analysis.csv`.
-
-### Example 2: Creating an Intent Classification Dataset
-
-1. **Load Template**: Select `intent_classification.json` from the template dropdown.
-2. **Review Fields and Examples**.
-3. **Generate Dataset**: Click "✨ Generate Dataset" to create 150 entries.
-4. **Validate and Export**: Ensure data quality and export as JSON.
+|Letter|Meaning|
+|---|---|
+|**D**|Dynamic|
+|**A**|AI|
+|**V**|Virtual|
+|**Y**|Yielding|
+|**D**|Dataset|
 
 ---
 
-## Contribution
+## 📚 Features Overview
 
-Contributions are welcome! Feel free to open an issue or submit a pull request to enhance DAVYD.
+### 1 – Desktop UI (new)
 
-### How to Contribute
+- Qt menu-bar, keyboard shortcuts, zoom, dark/light theme.
+    
+- Non-blocking dataset generation via `DatasetGenerationThread`.
+    
 
-1. **Fork the Repository**:
-   - Click the "Fork" button at the top right of the repository page.
-2. **Create a New Branch** for your feature or bug fix:
-   ```sh
-   git checkout -b feature-name
-   ```
-3. **Commit Your Changes**:
-   ```sh
-   git commit -m "Add a feature or fix a bug"
-   ```
-4. **Push to Your Branch**:
-   ```sh
-   git push origin feature-name
-   ```
-5. **Open a Pull Request**:
-   - Navigate to your forked repository on GitHub.
-   - Click the "Compare & pull request" button.
-   - Provide a clear description of your changes and submit the pull request.
+### 2 – AI Model Integration
 
----
+- Providers pluggable through `model_providers.py`.
+    
+- Health-check verifies connectivity before generation starts.
+    
 
-## License
+### 3 – Data Validation
 
-This project is licensed under the [MIT License](LICENSE). See the [LICENSE](LICENSE) file for details.
+- Automatic field count, empty-value & type checks.
+    
+- Tenacity-backed retries for flaky network/API calls.
+    
 
----
+### 4 – Dataset Management
 
-## Support
-
-If you encounter any issues or have questions, feel free to contact the developer:
-
-- **Email**: [agustealo@gmail.com](mailto:agustealo@gmail.com)
-- **Website**: [agustealo.com](https://agustealo.com)
-
-![Agustealo.com](https://agustealo.com/wp-content/uploads/2024/06/agustealo-hztl-logo-BLK-w400.png)
+- **Archive** ➜ moves to `data_bin/archive`
+    
+- **Merged** ➜ collate datasets into a single file
+    
+- **Restore / Delete / Download** via UI buttons
+    
 
 ---
 
-**Happy dataset generation with DAVYD! 🚀🔥**
+## 💡 Usage Examples
+
+### Sentiment Analysis Dataset (150 rows)
+
+```text
+Fields: text | intent | sentiment | sentiment_polarity | tone | category | keywords
+Example row:
+"I love this product!" | "affirmation" | "positive" | 0.9 | "enthusiastic" | "review" | "love product"
+```
+
+_Generate → export as `sentiment_analysis.csv`._
+
+### Intent Classification Dataset
+
+1. Load template `intent_classification.json`.
+    
+2. Generate 200 rows.
+    
+3. Export as JSON for direct ML ingestion.
+    
 
 ---
+
+## 🤝 Contribution
+
+Pull requests are very welcome!
+
+```bash
+# fork → feature branch → PR
+git checkout -b my-feature
+# hack hack
+git commit -am "Add awesome feature"
+git push origin my-feature
+```
+
+Please open an issue first if you plan a large change.
+
+---
+
+## 📝 License
+
+Released under the [MIT License](https://chatgpt.com/g/g-p-6812ca0ab8b881918aaf47ab1a7da457-davyd/c/LICENSE).
+
+---
+
+## 📬 Support
+
+- Fork maintainer: **Zeus Eternal** – [https://github.com/Zeus-Eternal](https://github.com/Zeus-Eternal)
+    
+- Upstream author: **agustealo** – [agustealo@gmail.com](mailto:agustealo@gmail.com)
+    
+
+Happy dataset generation! ✨
